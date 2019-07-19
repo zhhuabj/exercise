@@ -1,0 +1,168 @@
+1, machine preparation with ubuntu/password, create a nested KVM VM with 32G memory and 2 vCPU and 80G disk 
+
+NOTE: if the disk is too small (eg: 50G), it will throw the error: ERROR cannot save cookie jar: write /home/demo/.local/share/juju/cookies/lxd-controller.json: no space left on device
+
+#On underlying host, enable kvm nested, if the result of cat command is [N], change like follows and reboot the system
+cat /sys/module/kvm_intel/parameters/nested
+#sudo modprobe -r kvm_intel
+#sudo modprobe kvm_intel nested=1
+#echo 'options kvm_intel nested=1' >> /etc/modprobe.d/qemu-system-x86.conf  #reboot the system
+
+#On underlying host, need to change to use <cpu mode='host-passthrough'/> to make kvm nested work
+sudo apt install -y libvirt-clients cpu-checker
+sudo virsh edit openstack  #<cpu mode='host-passthrough'/>
+sudo virsh destroy openstack && sudo virsh start openstack
+
+2, Inside VM, speed up apt, and install some packages
+
+echo 'ubuntu     ALL=(ALL) NOPASSWD:ALL' |sudo tee -a /etc/sudoers
+echo 'precedence ::ffff:0:0/96 100' |sudo tee -a /etc/gai.conf
+sudo cp /etc/apt/sources.list /etc/apt/sources.list_bak
+sudo bash -c 'cat > /etc/apt/sources.list' << EOF
+deb http://mirrors.cloud.tencent.com/ubuntu/ bionic main restricted universe multiverse
+deb http://mirrors.cloud.tencent.com/ubuntu/ bionic-security main restricted universe multiverse
+deb http://mirrors.cloud.tencent.com/ubuntu/ bionic-updates main restricted universe multiverse
+#deb http://mirrors.cloud.tencent.com/ubuntu/ bionic-proposed main restricted universe multiverse
+#deb http://mirrors.cloud.tencent.com/ubuntu/ bionic-backports main restricted universe multiverse
+EOF
+sudo sed -i s/mirrors.cloud.tencent.com/mirrors.aliyun.com/g /etc/apt/sources.list
+sudo apt clean all
+sudo apt update
+sudo apt upgrade -y
+#sudo apt dist-upgrade
+#sudo apt install -y build-essential
+
+#https://docs.openstack.org/charm-guide/latest/openstack-on-lxd.html
+sudo snap install juju --classic
+sudo apt install -y zfsutils-linux squid-deb-proxy bridge-utils \
+    python-novaclient python-keystoneclient python-glanceclient \
+    python-neutronclient python-openstackclient curl 
+echo fs.inotify.max_queued_events=1048576 | sudo tee -a /etc/sysctl.conf
+echo fs.inotify.max_user_instances=1048576 | sudo tee -a /etc/sysctl.conf
+echo fs.inotify.max_user_watches=1048576 | sudo tee -a /etc/sysctl.conf
+echo vm.max_map_count=262144 | sudo tee -a /etc/sysctl.conf
+echo vm.swappiness=1 | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+
+3, Install lxd
+
+sudo lxd init  #all options use default values except storage backend=dir and ipv6=none
+sudo lxc profile device set default eth0 mtu 9000  #eth0 is inside container created by default (ip link set dev <nic> mtu 9000)
+sudo lxc remote list
+sudo lxc remote add faster https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases/server --protocol simplestreams
+sudo lxc launch faster:18.04 test1         #use tencent remote server to speed up in China
+#sudo unsquashfs -d testrootfs /var/lib/lxd/images/6ae1c6e92017402f1aee655fa8d785ee9d2337a3369d76115cecad5e7a303e07.rootfs
+#sudo lxc launch tencent:18.04 test1 -c security.nesting=true -v --debug
+#sudo lxc exec test1 -- sudo dhclient ens3   #run it in case there is no ipv4 ip
+sudo lxc exec test1 bash  #type ctrl+d to exit
+sudo lxc ls
+sudo lxc info test1 --show-log
+sudo lxc delete test1 --force
+
+4, Install openstack product env on lxd locally by using juju
+
+#NOTE: very slow here, vpn may be needed here to pass, because need to visit cloud-images.ubuntu.com(know image uuid to spawn instance)
+#      and streams.canonical.com(the url from which to download the juju agent ) here=
+#https://docs.jujucharms.com/cloud-image-metadata and https://docs.jujucharms.com/working-offline
+#19:07:32 DEBUG juju.environs.simplestreams simplestreams.go:683 using default candidate for content id "com.ubuntu.juju:released:tools" are #{20161007 mirrors:1.0 content-download streams/v1/cpc-mirrors.sjson []}
+#19:09:56 DEBUG juju.container.lxd connection.go:187 LXD requires https://, using: https://cloud-images.ubuntu.com/releases/
+#19:19:10 DEBUG juju.container.lxd image.go:56 Found image locally - "ubuntu-18.04-server-cloudimg-amd64-lxd.tar.xz"
+
+sudo lxc network set lxdbr0 ipv6.address none
+sudo chown -R $USER ~/.config
+git clone https://github.com/openstack-charmers/openstack-on-lxd.git && cd openstack-on-lxd/
+#sudo apt install -y apt-cacher-ng && sudo systemctl restart apt-cacher-ng.service   #/var/cache/apt-cacher-ng/
+#echo 'Acquire::http::Proxy "http://127.0.0.1:3142";' | sudo tee /etc/apt/apt.conf.d/01acng
+#MY_IP=$(ip addr show lxdbr0 |grep global |awk '{print $2}' |awk -F '/' '{print $1}')
+
+#juju kill-controller lxd-controller
+#juju bootstrap --debug --config default-series=bionic --config apt-http-proxy=`echo $MY_IP`:3142 localhost lxd-controller
+#juju bootstrap --debug --config default-series=bionic --config apt-mirror=http://mirrors.cloud.tencent.com/ubuntu/ --config image-metadata-url=https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases localhost lxd-controller
+juju bootstrap --debug --config default-series=bionic --config apt-mirror=http://mirrors.cloud.tencent.com/ubuntu/ localhost lxd-controller
+#use the following command to monitor the status for '19:35:11 INFO  cmd bootstrap.go:415 Running machine configuration script...'
+sudo lxc exec `lxc list |grep juju- |awk -F '|' '{print $2}'` -- tail -f /var/log/syslog
+sudo lxc config set `lxc list |grep juju- |awk -F '|' '{print $2}'` boot.autostart 1
+
+#deploy openstack
+cat lxd-profile.yaml | lxc profile edit juju-default #make sure kvm-ok work if any errors happen here
+sudo lxc profile show juju-default
+sed -i s/cs:neutron-gateway/cs:~openstack-charmers-next\\/neutron-gateway/g bundle-bionic-rocky.yaml  #fix lp bug 1829047
+juju deploy bundle-bionic-rocky.yaml
+sudo lxc list
+watch -c juju status --color
+juju debug-log
+juju show-controller lxd-controller
+juju ssh 0                 #ssh into machine
+juju ssh -m controller 0   #ssh into controller model (juju models)
+
+#hit bug - https://bugs.launchpad.net/charm-neutron-gateway/+bug/1829047
+#git clone https://github.com/openstack/charm-neutron-gateway.git neutron-gateway && cd neutron-gateway/
+#git fetch https://review.opendev.org/openstack/charm-neutron-gateway refs/changes/22/659722/2 && git checkout FETCH_HEAD
+#juju upgrade-charm neutron-gateway --path $PWD   #tail: inotify cannot be used, reverting to polling: Too many open files
+#sed -i s/cs:neutron-gateway/cs:~openstack-charmers-next\\/neutron-gateway/g bundle-bionic-rocky.yaml
+#sudo snap install charm --classic && charm pull cs:~openstack-charmers-next/neutron-gateway
+#juju upgrade-charm neutron-gateway --switch=cs:~openstack-charmers-next/neutron-gateway
+juju config neutron-gateway sysctl=
+juju resolve neutron-gateway/0
+juju ssh neutron-gateway/0 -- sudo tail -f /var/log/juju/unit-neutron-gateway-0.log
+
+#hit bug - inotify cannot be used, reverting to polling: Too many open files, run the following commands in underlying host
+#https://medium.com/@ivanermilov/how-to-fix-inotify-cannot-be-used-reverting-to-polling-too-many-open-files-bb1c1437dbf 
+cat /proc/sys/fs/inotify/max_user_watches
+sudo sysctl fs.inotify.max_user_watches=599999
+sudo sysctl -p
+
+#hit bug - rabbitmq-server/0 is with error status
+juju ssh rabbitmq-server/0 -- sudo systemctl restart rabbitmq-server
+juju ssh rabbitmq-server/0 -- sudo /usr/sbin/rabbitmqctl add_vhost openstack
+juju resolve rabbitmq-server/0
+
+#hit bug - ceph/0 and nova-compute/0 and ceilometer-agent/0 are with error status
+juju ssh ceph-osd/0 -- sudo dpkg --configure -a
+juju resolve ceph-osd/0
+juju ssh nova-compute/0 -- sudo dpkg --configure -a
+juju resolve nova-compute/0
+juju ssh ceilometer-agent/0 -- sudo dpkg --configure -a
+juju resolve ceilometer-agent/0
+
+#add disk, insufficient space in /var/lib/lxd/storage-pools/default/containers
+sudo pvcreate /dev/vdb
+sudo vgextend openstack-vg /dev/vdb
+sudo lvextend -L +10G /dev/openstack-vg/root
+sudo resize2fs /dev/openstack-vg/root
+sudo df
+sudo vgs && sudo lvs && sudo pvs
+
+#use openstack - https://paste.ubuntu.com/p/TRCZ9VPhFf/
+source openrcv3_project
+sudo apt install -y python-oslo.log && source <(openstack complete)
+openstack catalog list
+openstack service list
+openstack network agent list
+openstack volume service list
+#curl https://cloud-images.ubuntu.com/xenial/current/xenial-server-cloudimg-amd64-disk1.img
+wget http://download.cirros-cloud.net/0.3.4/cirros-0.3.4-x86_64-disk.img
+openstack image create "cirros" --file cirros-0.3.4-x86_64-disk.img --disk-format qcow2 --container-format bare --public
+openstack image list
+./neutron-ext-net-ksv3 --network-type flat -g 10.0.8.1 -c 10.0.8.0/24 -f 10.0.8.201:10.0.8.254 ext_net
+./neutron-tenant-net-ksv3 -p admin -r provider-router -N 10.0.8.1 internal 192.168.20.0/24
+#ssh-keygen
+openstack keypair create --public-key ~/.ssh/id_rsa.pub mykey
+openstack flavor list
+openstack flavor create --public --ram 512 --disk 1 --ephemeral 0 --vcpus 1 m1.tiny
+openstack server create --image cirros --flavor m1.tiny --key-name mykey --wait \
+   --nic net-id=$(openstack network list | grep internal | awk '{ print $2 }') i1
+nova console-log i1
+fix_ip=$(openstack server list -f value |awk '/i1/ {print $4}' |awk -F '=' '{print $2}' |awk -F ',' '{print $1}')
+fip=$(openstack floating ip create ext_net -f value -c floating_ip_address)
+openstack floating ip set $fip --fixed-ip-address $fix_ip --port $(openstack port list --fixed-ip ip-address=$fix_ip -c id -f value)
+#openstack server add floating ip <uuid-of-instance> $fip
+for i in $(openstack security group list | awk '/default/{ print $2 }'); do \
+    openstack security group rule create $i --protocol icmp --remote-ip 0.0.0.0/0; \
+    openstack security group rule create $i --protocol tcp --remote-ip 0.0.0.0/0 --dst-port 22; \
+done
+juju ssh neutron-gateway/0 -- sudo ip netns exec qrouter-7c02a893-ab21-4695-a380-934ca8777c07 ping 192.168.20.4
+juju ssh neutron-gateway/0 -- sudo ip netns exec qrouter-7c02a893-ab21-4695-a380-934ca8777c07 ssh cirros@192.168.20.4
+openstack volume create --size 1 testvol1
+openstack server add volume i1 testvol1
+openstack volume show testvol1
