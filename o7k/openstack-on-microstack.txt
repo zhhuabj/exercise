@@ -1,0 +1,20 @@
+#https://github.com/CanonicalLtd/microstack
+sudo snap install microstack --classic --candidate
+microstack.launch i1
+#microstack.openstack server create --flavor m1.small --nic net-id=test --image cirros my-microstack-server
+chromium-browser http://10.20.20.1  #admin/keystone
+microstack.openstack server list
+microstack.openstack network list
+#sudo snap alias microstack.openstack openstack
+SECGROUP_ID=`microstack.openstack security group list --project admin -f value -c ID`
+microstack.openstack security group rule create $SECGROUP_ID --proto tcp --remote-ip 0.0.0.0/0 --dst-port 22
+microstack.openstack security group rule create $SECGROUP_ID --proto icmp --remote-ip 0.0.0.0/0
+ssh -i ~/.ssh/id_microstack cirros@<IP>
+sudo snap disable microstack
+sudo snap enable microstack
+
+sudo snap logs microstack
+sudo unsquashfs -l /var/lib/snapd/snaps/microstack_127.snap
+ubuntu@openstack:~$ mount |grep microstack
+/var/lib/snapd/snaps/microstack_127.snap on /snap/microstack/127 type squashfs (ro,nodev,relatime,x-gdu.hide)
+
