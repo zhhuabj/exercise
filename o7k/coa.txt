@@ -1,0 +1,112 @@
+source <(openstack complete)
+unset OS_SERVICE_TOKEN
+    export OS_USERNAME=admin
+    export OS_PASSWORD='openstack'
+    export OS_AUTH_URL=http://10.200.0.10:5000/v3
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_IDENTITY_API_VERSION=3
+
+# keystone
+openstack service create --name environment labs
+openstack endpoint create --region RegionOne labs admin http://10.200.0.10:598
+openstack endpoint create --region RegionOne labs internal http://10.200.0.10:598
+openstack endpoint create --region RegionOne labs public http://10.200.0.10:598
+openstack endpoint list --service labs
+openstack domain create research
+openstack project create astronomy --description "Astronomy Department" --domain research
+
+openstack group create researchers --domain research
+openstack role create scientist --domain research
+openstack role add --group researchers --domain research --role-domain research scientist
+openstack role assignment list --group researchers --names
+
+openstack user create --email roger@example.com roger
+openstack group add user researchers roger
+openstack group contains user researchers roger
+openstack role add --user roger --project astronomy _member_
+openstack role assignment list --project astronomy
+
+# glance
+openstack image create --file /root/files/xenial-server-cloudimg-amd64-disk1.img --private  --project bio-chem --disk-format qcow2 --container-format bare ubuntu
+openstack image list
+openstack image save --file /root/oldimage.img cirros
+du -h /root/oldimage.img
+openstack image set --min-ram 512 ubuntu
+openstack image show ubuntu -f value -c min_ram
+
+# nova
+openstack flavor create --ram 512 --disk 2 --vcpu 1 --id 15 m1.data
+
+#export OS_PROJECT_NAME=biology
+cp admin-openrc bio-openrc
+sed -i "s/OS_PROJECT_NAME=admin/OS_PROJECT_NAME=biology/g" bio-openrc
+. bio-openrc
+openstack server suspend server1
+openstack server resume server2
+openstack server backup create --name server1_backup server1
+openstack image show server1_backup
+
+man ssh-keygen
+ssh-keygen -q -N ""
+. demo-openrc
+openstack keypair create --public-key /root/.ssh/id_rsa.pub demokey
+
+. demo-openrc
+openstack security group create access
+openstack security group rule create --dst-port 22:22 access
+openstack security group rule list access
+
+. demo-openrc
+openstack server create --image cirros --flavor m1.data --security-group access --key-name demokey --network=private isotope
+openstack floating ip create public
+openstack server add floating ip isotope 172.24.4.28
+
+. admin-openrc
+openstack quota set --cores 50 --volumes 20 bio-chem
+
+# neutron
+. bio-openrc
+openstack network create bio-net
+openstack subnet create --subnet-range 10.10.0.0/24 --dhcp --dhcp --network bio-net --allocation-pool start=10.10.0.50,end=10.10.0.100 --dns-nameserver 8.8.8.8 bio-net-subnet
+openstack router create bio-rtr
+openstack router add subnet bio-rtr bio-net-subnet
+openstack router set --external-gateway public bio-rtr
+
+# swift
+. admin-openrc
+echo "Experiment - Results" > data.txt
+swift post recordsheets
+swift upload recordsheets data.txt --object-name data
+swift download recordsheets data --output records_copy.txt
+swift post -r biology:* recordsheets
+swift post -w biology:jen recordsheets
+date --date 2019-12-31 +%s
+#swift post recordsheets data -H "X-Remove-Delete-After:1577750400"
+swift post recordsheets data -H "X-Delete-After:1577750400"
+
+# cinder
+. demo-openrc
+openstack volume create --size 2 volume2
+openstack server add volume isotope volume2
+
+. admin-openrc
+openstack volume list --all
+. bio-openrc
+openstack volume snapshot create --volume volume1 vol1_snap
+openstack volume snapshot list
+
+# heat
+. bio-openrc
+openstack stack create -h
+openstack stack create --parameter vm_name=science --parameter image=cirros --parameter flavor=m1.tiny --parameter volume=77947c2b-8d81-46e1-9726-221b2cf2c7e5 --parameter net=public -t /root/files/test-stack.yml science-stack
+openstack stack output list science-stack
+openstack stack output show science-stack private_ip
+
+# Logs
+. admin-openrc
+openstack project create project-net
+openstack network show project-net -f value -c id
+grep -r 'e4eafeed-aa49-404b-b071-53ce0f199887' /var/log/
+grep -r 'req-3b90ed46-2858-4360-9a34-20f8278a55fa' /var/log/ |tail -n 1 > /root/project-net.log
