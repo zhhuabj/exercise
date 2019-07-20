@@ -1,0 +1,14 @@
+#https://microk8s.io/
+sudo snap install microk8s --edge --classic
+snap list
+journalctl -u snap.microk8s.daemon-apiserver.service
+microk8s.kubectl get no
+microk8s.enable dns dashboard
+microk8s.kubectl get all --all-namespaces
+microk8s.kubectl get pods --all-namespaces
+#Failed to pull image "k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1" due to gfw
+microk8s.kubectl describe pod kubernetes-dashboard-7d75c474bb-rtzm5 --namespace=kube-system
+token=$(microk8s.kubectl -n kube-system get secret | grep default-token | cut -d " " -f1)
+microk8s.kubectl -n kube-system describe secret $token
+microk8s.kubectl cluster-info
+lynx http://xxxx
