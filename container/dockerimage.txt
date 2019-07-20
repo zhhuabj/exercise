@@ -1,0 +1,71 @@
+Docker镜像和上一页介绍的aufs一模一样，自己实现容器时也可以将自定义root filesystem作为只读层和一个可写层使用aufs联合文件系统mount到一个目录。请看实验：
+
+$ sudo docker pull ubuntu:16.04
+16.04: Pulling from library/ubuntu
+d5c6f90da05d: Pull complete 
+1300883d87d5: Pull complete 
+c220aa3cfc1b: Pull complete 
+2e9398f099dc: Pull complete 
+dc27a084064f: Pull complete 
+Digest: sha256:34471448724419596ca4e890496d375801de21b0e67b81a77fd6155ce001edad
+Status: Downloaded newer image for ubuntu:16.04
+
+# ls /var/lib/docker/aufs/mnt
+0aef0852f988c823d09a1ac3d33a014b60e5ef1366ec97efc4141e614d93f785
+99e44a0544eb4ba09313fb91c3db0af981710c174398b756ae5c7008601b8e44
+c77597eb9db45e950254d907cd021c1d718cd746080cb07ad56852fc5ede6565
+e00078550b31a3b332258b6c766a6f655305467eed7bb80d1884e374f643c3d1
+ff9a51e047cc9de667f64e11d9829cceedee17633b29999afd2dc24b17947884
+
+# ls /var/lib/docker/aufs/diff
+0aef0852f988c823d09a1ac3d33a014b60e5ef1366ec97efc4141e614d93f785
+99e44a0544eb4ba09313fb91c3db0af981710c174398b756ae5c7008601b8e44
+c77597eb9db45e950254d907cd021c1d718cd746080cb07ad56852fc5ede6565
+e00078550b31a3b332258b6c766a6f655305467eed7bb80d1884e374f643c3d1
+ff9a51e047cc9de667f64e11d9829cceedee17633b29999afd2dc24b17947884
+
+# cat /var/lib/docker/aufs/layers/0aef0852f988c823d09a1ac3d33a014b60e5ef1366ec97efc4141e614d93f785 
+e00078550b31a3b332258b6c766a6f655305467eed7bb80d1884e374f643c3d1
+ff9a51e047cc9de667f64e11d9829cceedee17633b29999afd2dc24b17947884
+99e44a0544eb4ba09313fb91c3db0af981710c174398b756ae5c7008601b8e44
+
+# cat dockerfile
+FROM ubuntu:16.04
+RUN echo "Hello World" > /tmp/newfile
+# docker build -t changed-ubuntu .
+Sending build context to Docker daemon 2.048 kB
+Step 1 : FROM ubuntu:16.04
+ ---> ccc7a11d65b1
+Step 2 : RUN echo "Hello World" > /tmp/newfile
+ ---> Running in 007025736e11
+ ---> eb7b1b383d98
+Removing intermediate container 007025736e11
+Successfully built eb7b1b383d98
+
+# docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+changed-ubuntu      latest              eb7b1b383d98        25 seconds ago      120.1 MB
+ubuntu              16.04               ccc7a11d65b1        4 weeks ago         120.1 MB
+# docker history changed-ubuntu
+IMAGE               CREATED             CREATED BY                                      SIZE                COMMENT
+eb7b1b383d98        49 seconds ago      /bin/sh -c echo "Hello World" > /tmp/newfile    12 B                
+ccc7a11d65b1        4 weeks ago         /bin/sh -c #(nop)  CMD ["/bin/bash"]            0 B                 
+<missing>           4 weeks ago         /bin/sh -c mkdir -p /run/systemd && echo 'doc   7 B                 
+<missing>           4 weeks ago         /bin/sh -c sed -i 's/^#\s*\(deb.*universe\)$/   2.759 kB            
+<missing>           4 weeks ago         /bin/sh -c rm -rf /var/lib/apt/lists/*          0 B                 
+<missing>           4 weeks ago         /bin/sh -c set -xe   && echo '#!/bin/sh' > /u   745 B               
+<missing>           4 weeks ago         /bin/sh -c #(nop) ADD file:39d3593ea220e686d5   120.1 MB 
+
+# cat /var/lib/docker/aufs/layers/86312f713abfbcf4fd3c7a9eec07d791357a92cc1822cde32de16b5ea90b3914 
+c77597eb9db45e950254d907cd021c1d718cd746080cb07ad56852fc5ede6565
+0aef0852f988c823d09a1ac3d33a014b60e5ef1366ec97efc4141e614d93f785
+e00078550b31a3b332258b6c766a6f655305467eed7bb80d1884e374f643c3d1
+ff9a51e047cc9de667f64e11d9829cceedee17633b29999afd2dc24b17947884
+99e44a0544eb4ba09313fb91c3db0af981710c174398b756ae5c7008601b8e44
+
+# cat /var/lib/docker/aufs/diff/86312f713abfbcf4fd3c7a9eec07d791357a92cc1822cde32de16b5ea90b3914/tmp/newfile 
+Hello World
+# cat /var/lib/docker/aufs/diff/c77597eb9db45e950254d907cd021c1d718cd746080cb07ad56852fc5ede6565/run/systemd/container
+docker
+
+

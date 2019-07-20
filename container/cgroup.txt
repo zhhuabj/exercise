@@ -1,0 +1,15 @@
+Ubuntu系统默认已经加载了cgroups文件系统到/sys/fs/cgroup目录下（如果没挂载，可使用'sudo mount -t cgroup -o none,name=cgroup-test cgrout-test ./cgroup-test"挂载）。此例是使用cgroups限制内存，cgroup用于将一组进程和一组subsystem关联，不仅有设置内存的memory的subsystem，还有其他subsystem（如设置块设置的blkio subsystem, 设置cpu被调度策略的cpu subsystem, 设置进程产生的网络优先级的net_prio subsystem, 设置将某个cgroup中的进程产生的网络包打标签分类再用tc限流的net_cls subsystem等）
+
+1, 创建一个cgroup并设置内存最多能使用100M
+   sudo mkdir /sys/fs/cgroup/memory/test-limit-memory
+   sudo sh -c "echo "100m" > /sys/fs/cgroup/memory/test-limit-memory/memory.limit_in_bytes"
+2, 将当前进程移到这个cgroup
+   sudo sh -c "echo $$ > /sys/fs/cgroup/memory/test-limit-memory/tasks"
+3, 使用stress命令模拟内存测试
+   stress --vm-bytes 200m --vm-keep -m 1
+4, 使用top命令查看共用了内存100M(32G*0.003):
+   $ cat /proc/meminfo |grep MemTotal 
+     MemTotal:       32749408 kB
+   $ top
+     PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND 
+     16659 hua       20   0  212288 101276    212 R   6.7  0.3   0:00.96 stress

@@ -1,0 +1,33 @@
+1, Install LXC
+git clone git://github.com/lxc/lxc
+cd lxc && sh autogen.sh
+./configure && make && sudo make install
+
+2, Create the first container
+# It will call the command 'debootstrap --arch amd64 --verbose --components=main,universe --include=apt-transport-https,ssh,vim,language-pack-en xenial /var/cache/lxc/xenial/partial-amd64 http://archive.ubuntu.com/ubuntu' to create rootfs
+sudo lxc-create -t ubuntu -n test1
+sudo lxc-start -n test1 -d
+sudo lxc-ls --fancy
+sudo lxc-ls --fancy --nesting
+
+# way one to spawn bash in the container (need the console login ubuntu/ubuntu)
+sudo lxc-console -n test1
+## way two to spawn bash directly in the container (bypassing the console login), 
+sudo lxc-attach -n test1
+
+# SSH into it
+sudo lxc-info -n test1
+ssh ubuntu@<ip from lxc-info>
+
+## Stop it cleanly from the outside
+sudo lxc-stop -n test1
+
+# Passing devices to a running container
+sudo lxc-device add -n p1 /dev/ttyUSB0 /dev/ttyS0
+
+# exchanging data with a container, access the container’s root
+touch  /var/lib/lxc/test1/rootfs/root/test
+
+# container nesting
+echo 'lxc.aa_profile = lxc-container-default-with-nesting' >> /var/lib/lxc/test1/config
+

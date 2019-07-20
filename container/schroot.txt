@@ -1,0 +1,36 @@
+Use schroot to enter a chroot without sudo
+
+# First need to use sudo to create chroot env
+sudo apt install -y schroot sbuild debhelper ubuntu-dev-tools piuparts
+sudo mkdir -p /var/lib/schroot/chroots/trusty-amd64
+sudo cp /etc/schroot/schroot.conf /etc/schroot/schroot.conf.old
+sudo debootstrap --include=sudo,bash-completion,kernel-wedge,fakeroot,git,vim,bc,gawk,libncurses5-dev,libssl-dev,openssl,build-essential,rsync --arch=amd64 trusty /var/lib/schroot/chroots/trusty-amd64 http://archive.ubuntu.com/ubuntu/
+
+LANG=C DEBIAN_FRONTEND=noninteractive chroot /var/lib/schroot/chroots/trusty-amd64 bash -c 'apt-get update'
+echo 'hua     ALL=(ALL) NOPASSWD:ALL' |sudo tee -a /var/lib/schroot/chroots/trusty-amd64/etc/sudoers
+
+vi /etc/schroot/chroot.d/sbuild-trusty-amd64
+[trusty-amd64]
+description=trusty-amd64
+# To avoid the error 'You do not have permission to access the schroot service'
+users=hua
+groups=sbuild,root,admin
+root-groups=sbuild,root,admin
+type=directory
+profile=default
+# NOTE: overlayfs was renamed to overlay since this commit
+# https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ef94b1864d1ed5be54376404bb23d22ed0481feb
+#union-type=overlayfs
+union-type=overlay
+directory=/var/lib/schroot/chroots/trusty-amd64
+source-root-users=root,sbuild,admin
+source-root-groups=root,sbuild,admin
+preserve-environment=true
+
+# Second use schroot
+schroot -l
+schroot -c trusty-amd64
+schroot -c trusty-amd64 -- cmd ...
+#export $(dpkg-architecture -aarm64); export CROSS_COMPILE=aarch64-linux-gnu-
+#fakeroot debian/rules clean binary-generic
+

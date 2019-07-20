@@ -1,0 +1,62 @@
+1, 测试数据准备
+$ tree .
+.
+├── layer
+│   └── layer.txt
+├── layer1
+│   └── layer1.txt
+├── layer2
+│   └── layer2.txt
+├── layer3
+│   └── layer3.txt
+├── layer4
+│   └── layer4.txt
+└── mnt
+
+$ cat layer/layer.txt 
+container layer
+$ cat layer1/layer1.txt 
+layer 1
+$ cat layer2/layer2.txt 
+layer 2
+$ cat layer3/layer3.txt 
+layer 3
+$ cat layer4/layer4.txt 
+layer 4
+
+2, 使用aufs文件系统模拟docker的aufs镜像机制
+$ sudo apt install -y aufs-tools
+$ sudo mount -v -t aufs -o dirs=./layer:./layer4:./layer3:./layer2:./layer1 none ./mnt
+
+3, 使用aufs文件系统模拟docker的aufs镜像机制
+$ sudo apt install -y aufs-tools
+$ sudo mount -v -t aufs -o dirs=./layer:./layer4:./layer3:./layer2:./layer1 none ./mnt
+
+4, 根据输出，只有container-layer文件夹是read-write的，其余的都是read-only权限。
+$ mount |grep aufs
+none on /bak/work/exercise/aufs/mnt type aufs (rw,relatime,si=f1d6deaf2bc6ccf7)
+$ cat /sys/fs/aufs/si_f1d6deaf2bc6ccf7/*
+/bak/work/exercise/aufs/layer=rw
+/bak/work/exercise/aufs/layer4=ro
+/bak/work/exercise/aufs/layer3=ro
+/bak/work/exercise/aufs/layer2=ro
+/bak/work/exercise/aufs/layer1=ro
+64
+65
+66
+67
+68
+/bak/work/exercise/aufs/layer/.aufs.xino
+
+5, 往虚拟挂载点mnt/image-layer4.txt的文件末尾添加一行文字
+$ echo -e "\nwrite to mnt's layer1.txt" >> ./mnt/layer4.txt
+
+6, 当尝试向虚拟挂载点mnt/image-layer4.txt写操作时，系统先在mnt目录找名为layer4.txt的文件，将其拷贝到read-write层的layer目录下，接着对./layer目录下多出layer4.txt文件进行写操作。
+$ cat ./mnt/layer4.txt 
+layer 4
+write to mnt's layer1.txt
+$ cat ./layer4/layer4.txt 
+layer 4
+$ cat ./layer/layer4.txt 
+layer 4
+write to mnt's layer1.txt
