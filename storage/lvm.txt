@@ -1,0 +1,17 @@
+1, 创建PV
+   # pvcreate /dev/sdb1 
+   dd if=/dev/zero of=ceph-volumes.img bs=1M count=1024 oflag=direct
+2, 创建VG
+    sudo vgcreate ceph-volumes $(sudo losetup --show -f ceph-volumes.img)
+    sudo vgs
+    # 往VG里添加PV,vgextend myvg /dev/sdb3
+    # 从VG中删除PV,vgremove myvg /dev/sdb1
+3, 从VG创建LV
+    sudo lvcreate -L512M -nceph0 ceph-volumes
+    sudo lvs
+    #sudo lvremove -f /dev/ceph-volumes/ceph0
+4, 使用LV
+    sudo apt install xfsprogs
+    sudo mkfs.xfs -f /dev/ceph-volumes/ceph0
+    sudo mkdir -p /tmp/test && sudo mount /dev/ceph-volumes/ceph0 /tmp/test
+    ls /tmp/test && sudo umount /tmp/test
