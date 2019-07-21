@@ -1,21 +1,12 @@
 #!/bin/bash 
 # 
 # 该脚本将创建raw格式的虚机镜像，使用debootstrap创建根文件系统，安装grub到根分区，同时也安装了EFI启动分区。可从注释获取更详细解释。
-# truncate -s 5G my.img
-# myloop=$(losetup --find --show my.img)
-# ./build_qemu_image_efi_raw.sh $myloop demo           #create chroot
-# ./build_qemu_image_efi_raw.sh $myloop demo chroot/   #not create chroot
+# ./build_qemu_image_efi_raw.sh      #create chroot
+# ./build_qemu_image_efi_raw.sh no   #not create chroot
 # 
 
-DISK=$1
-BOOTLABEL=$2
-ROOTDIR=$3
- 
-if [ -z "$DISK" -o -z "$BOOTLABEL" ]; then
-  echo "Syntax: $0 <image|disk> <root-label> [<chroot-dir>]"
-  exit 1
-fi
- 
+MAKEROOTFS=$1
+BOOTLABEL=BOOT
 if [ "$UID" != "0" ]; then
   echo "Must be root."
   exit 1
@@ -24,7 +15,15 @@ fi
 # Exit on errors
 set -xe
  
-# 安装依赖包
+if [ ! -f "os.img" ]; then
+  truncate -s 5G os.img
+fi
+is_looped=$(losetup -a |grep 'os.img')
+if [ ! -n "$is_looped" ]; then
+  LOOPDEV=$(losetup --find --show os.img)
+fi
+
+# install some packages
 apt-get install -y --force-yes \
   debootstrap \
   gdisk \
@@ -32,48 +31,49 @@ apt-get install -y --force-yes \
   grub-efi-amd64-bin \
   e2fsprogs
  
-# 制作根文件分区，安装grub，创建登录用户
-if [ -z "$ROOTDIR" ]; then
-  ROOTDIR=chroot/
-  
+# make ./rootfs, install grub, and create login user(demo/password)
+if [ -z "$MAKEROOTFS" ]; then
   # Bootstrap minimal system
-  debootstrap --variant=minbase xenial chroot
+  debootstrap --variant=minbase bionic rootfs
  
-  # Install kernel and grub
-  for d in dev sys proc; do mount --bind /$d chroot/$d; done
+  for d in dev sys proc; do mount --bind /$d rootfs/$d; done
 
-  DEBIAN_FRONTEND=noninteractive chroot chroot apt-get install linux-image-generic grub-pc -y --force-yes
+cat << EOF > rootfs/etc/apt/sources.list
+deb http://mirrors.aliyun.com/ubuntu/ bionic main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ bionic-security main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ bionic-updates main restricted universe multiverse
+EOF
+  DEBIAN_FRONTEND=noninteractive chroot rootfs apt-get update
+  DEBIAN_FRONTEND=noninteractive chroot rootfs apt-get install linux-image-generic grub-pc -y --force-yes
 
-  # Add one user non-interactively
-  chroot chroot userdel -r -f hua > /dev/null 2>&1
-  #chroot chroot useradd -g users -G root -s /bin/bash -d /home/hua -m hua
-  chroot chroot adduser --disabled-password --gecos "" hua
-  echo "hua:password" | chpasswd -R chroot
-  echo 'hua ALL=(ALL) NOPASSWD: ALL' >> chroot/etc/sudoers
-  mkdir -p "chroot/home/hua/.ssh"
-  cat /home/hua/.ssh/{id_*.pub,authorized_keys} 2>/dev/null | sort -u > "chroot/home/hua/.ssh/authorized_keys"
-  # root user
-  echo "root:password" | chpasswd -R "chroot"
-  mkdir -p "chroot/root/.ssh"
-  cat /home/hua/.ssh/{id_*.pub,authorized_keys} 2>/dev/null | sort -u > "chroot/root/.ssh/authorized_keys"
+  chroot rootfs userdel -r -f demo > /dev/null 2>&1
+  #chroot rootfs useradd -g users -G root -s /bin/bash -d /home/demo -m demo
+  chroot rootfs adduser --disabled-password --gecos "" demo
+  #echo "demo:password" | chpasswd --root rootfs
+  echo "demo:password" |chroot rootfs /usr/sbin/chpasswd
+  echo 'demo ALL=(ALL) NOPASSWD: ALL' >> rootfs/etc/sudoers
+  mkdir -p "rootfs/home/demo/.ssh"
+  cat /home/demo/.ssh/{id_*.pub,authorized_keys} 2>/dev/null | sort -u > "rootfs/home/demo/.ssh/authorized_keys"
+  echo "root:password" |chroot rootfs /usr/sbin/chpasswd
+  mkdir -p "rootfs/root/.ssh"
+  cat /home/demo/.ssh/{id_*.pub,authorized_keys} 2>/dev/null | sort -u > "rootfs/root/.ssh/authorized_keys"
 
-  umount chroot/{dev,proc,sys}
+  umount rootfs/{dev,proc,sys}
 fi
+
+
  
-# 创建一个GPT磁盘，并分三个区：
+# Create a GPT disk, divide it into three partitions
 # 1M BIOS Boot Partition
 # 100M EFI Partition
 # ROOT Partition
-if [ ! -b "${DISK}" ]; then
-  truncate --size 5G $DISK
-fi
 # Create partition layout
 #sgdisk --clear \
 #  --new 1::+1M --typecode=1:ef02 --change-name=1:'BIOS boot partition' \
 #  --new 2::+100M --typecode=2:ef00 --change-name=2:'EFI System' \
 #  --new 3::-0 --typecode=3:8300 --change-name=3:'Linux root filesystem' \
-#  $DISK 
-gdisk ${DISK} << EOF
+#  $LOOPDEV 
+gdisk ${LOOPDEV} << EOF
 o
 y
 n
@@ -96,23 +96,19 @@ w
 y
 EOF
  
-# 对GPT磁盘作一些设置
-# 1, 将根分区格式化为ext4格式，同时将EFI分区格式化为fat32格式
-# 2, 将我们制作的根文件系统拷贝到根分区
+# 安装./rootfs与grub到${LOOPDEV}p3
+# 1, 将根分区(${LOOPDEV}p3)格式化为ext4格式，同时将EFI分区(${LOOPDEV}p2)格式化为fat32格式
+# 2, 将我们用bootstrap制作的根文件系统拷贝到根分区(rsync -a rootfs/ ${MOUNTDIR}/)
 # 3, 在根分区中安装grub (因为用的是GPT，所以安装GRUB时也要安装ext2与part_gpt模块)
 # 4, 更新grub
-LOOPDEV=$(losetup --find --show $DISK)
-partprobe ${LOOPDEV}
- 
-# Create filesystems
+partprobe ${LOOPDEV} && sleep 5
+
 mkfs.fat -F32 ${LOOPDEV}p2
 mkfs.ext4 -F -L "${BOOTLABEL}" ${LOOPDEV}p3
- 
-# Mount OS partition, copy chroot, install grub
+
 MOUNTDIR=$(mktemp -d -t demoXXXXXX)
 mount ${LOOPDEV}p3 ${MOUNTDIR}
- 
-rsync -a ${ROOTDIR}/ ${MOUNTDIR}/
+rsync -a rootfs/ ${MOUNTDIR}/
  
 for d in dev sys proc; do mount --bind /$d ${MOUNTDIR}/$d; done
 chroot ${MOUNTDIR}/ grub-install --modules="ext2 part_gpt" ${LOOPDEV}
@@ -121,7 +117,7 @@ chroot ${MOUNTDIR}/ update-grub
 umount $MOUNTDIR/{dev,proc,sys,}
 rmdir $MOUNTDIR
  
-# 安装EFI分区(/boot/efi type vfat)
+# 安装EFI分区到${LOOPDEV}p2设备(/boot/efi type vfat)
 # 1, 使用grub-mkimage命令根据本机的/usr/lib/grub/x86_64-efi模块(本机需安装grub-efi-amd64-bin)生成efi模块(/boot/efi/EFI/BOOT/bootx64.efi)
 # 2, 生成/boot/efi/EFI/BOOT/grub.cfg, 它会根据配置文件再加载根分区上的grub.cfg (/boot/grub/grub.cfg)
 MOUNTDIR=$(mktemp -d -t demoXXXXXX)
@@ -136,27 +132,26 @@ grub-mkimage \
     fat iso9660 part_gpt part_msdos normal boot linux configfile loopback chain efifwsetup efi_gop \
     efi_uga ls search search_label search_fs_uuid search_fs_file gfxterm gfxterm_background \
     gfxterm_menu test all_video loadenv exfat ext2 ntfs btrfs hfsplus udf
- 
-# Create grub config
+
+#e2label ${${LOOPDEV}}p3 ${BOOTLABEL}
+#blkid
 cat <<GRUBCFG > ${MOUNTDIR}/EFI/BOOT/grub.cfg
 search --label "${BOOTLABEL}" --set prefix
 configfile (\$prefix)/boot/grub/grub.cfg
 GRUBCFG
- 
-umount $MOUNTDIR
-rmdir $MOUNTDIR
- 
+
 # Remove loop device
+umount $MOUNTDIR
 sync ${LOOPDEV} 
 losetup -d ${LOOPDEV}
  
 echo "Done. ${DISK} is ready to be booted via BIOS and UEFI."
 
 # Test the base image
-# qemu-system-x86_64 -m 2048  my.img -serial stdio  #It's sda, and also need to change device.map
-# qemu-system-x86_64 -m 2048 -drive file=my.img,if=virtio -serial stdio  #It's vda, and it requires device.map
+# qemu-system-x86_64 -m 2048 os.img -serial stdio  #It's sda, and also need to change device.map
+# qemu-system-x86_64 -m 2048 -drive file=os.img,if=virtio -serial stdio  #It's vda, and it requires device.map
 BASE_MAC="52:54:74:b7:10:"
-# qemu-system-x86_64 -m 2048 -drive file=my.img,if=virtio -device virtio-net-pci,netdev=net1,mac=${BASE_MAC}fd -netdev tap,id=net1,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown
+# qemu-system-x86_64 -m 2048 -drive file=os.img,if=virtio -device virtio-net-pci,netdev=net1,mac=${BASE_MAC}fd -netdev tap,id=net1,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown
 
 # Burning to disk
 #dd if=/dev/nbd0 of=/dev/sdb bs=4M; sync
@@ -252,5 +247,5 @@ sudo qemu-system-x86_64 -enable-kvm -machine q35 -smp 8 -m 4096 \
 #-serial stdio
 
 cat /tmp/dhcphosts
-echo " - SSH: hua@${NETWORK}250 (password: password)"
+echo " - SSH: demo@${NETWORK}250 (password: password)"
 echo " OR: minicom -D unix\#/tmp/guest.monitor"
