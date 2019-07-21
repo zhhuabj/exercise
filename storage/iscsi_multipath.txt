@@ -1,0 +1,38 @@
+# iscsi server side (192.168.99.119)
+sudo apt-get install -y lvm2 tgt
+dd if=/dev/zero of=/tmp/test-volume.img bs=1M count=2048
+sudo vgcreate testvg $(sudo losetup -f --show /tmp/test-volume.img)
+sudo lvcreate -L 1.5G -n lv1 testvg  #will create /dev/testvg/lv1
+
+sudo tgtadm --lld iscsi --op new --mode target --tid 1 --targetname iqn.2019-07.com.quqi:storage
+sudo tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 --backing-store /dev/testvg/lv1 #Attach a LUN
+sudo tgt-admin --dump |sudo tee /etc/tgt/conf.d/my-targets.conf  #persistent
+#persistent
+sudo -i
+tgt-admin --dump > /etc/tgt/conf.d/my-targets.conf && exit
+sudo service tgt restart
+sudo tgtadm --mode target --op show  #verify
+
+# iscsi client side
+sudo apt install -y open-iscsi multipath-tools
+sudo iscsiadm -m node
+sudo iscsiadm -m discovery -t sendtargets -p 192.168.99.119
+#sudo iscsiadm -m node --targetname iqn.2019-07.com.quqi:storage -p 192.168.99.119 --logout
+sudo iscsiadm -m node --targetname iqn.2019-07.com.quqi:storage -p 192.168.99.119 --login
+sudo iscsiadm -m session
+sudo multipath -l
+sudo mkfs.ext4 /dev/mapper/360000000000000000e00000000010001
+sudo mkdir /test
+sudo mount -o _netdev /dev/mapper/360000000000000000e00000000010001 /test
+
+$ sudo iscsiadm -m session
+tcp: [2] 192.168.99.119:3260,1 iqn.2019-07.com.quqi:storage (non-flash)
+
+$ sudo multipath -l
+360000000000000000e00000000010001 dm-0 IET,VIRTUAL-DISK
+size=1.5G features='0' hwhandler='0' wp=rw
+`-+- policy='service-time 0' prio=0 status=active
+  `- 6:0:0:1 sdc 8:32 active undef unknown
+
+$ sudo fdisk -l |grep mapper
+Disk /dev/mapper/360000000000000000e00000000010001: 1.5 GiB, 1610612736 bytes, 3145728 sectors

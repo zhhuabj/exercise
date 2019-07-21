@@ -1,0 +1,200 @@
+# Precondition - setup host entry and ssh password-free login
+local_host="`hostname --fqdn`"
+local_ip=`host $local_host 2>/dev/null | awk '{print $NF}' |head -n 1`
+sudo bash -c 'cat >> /etc/hosts' << EOF
+`echo $local_ip`   `echo $local_host`
+EOF
+sudo sed -i "/$local_host/"d /etc/hosts
+ssh-copy-id -i ~/.ssh/id_rsa.pub $local_ip #run multiple times if there are mutliple nodes
+ping -c 1 $local_ip
+
+# Create two disk for test
+sudo mkdir -p /images && sudo chown $(whoami) /images
+dd if=/dev/zero of=/images/ceph-volumes.img bs=1M count=8192 oflag=direct
+sudo losetup -d /dev/loop0 > /dev/null 2>&1
+sudo vgremove -y ceph-volumes > /dev/null 2>&1
+sudo vgcreate ceph-volumes $(sudo losetup --show -f /images/ceph-volumes.img)
+sudo lvcreate -L2G -nceph0 ceph-volumes
+sudo lvcreate -L2G -nceph1 ceph-volumes
+sudo mkfs.xfs -f /dev/ceph-volumes/ceph0
+sudo mkfs.xfs -f /dev/ceph-volumes/ceph1
+sudo mkdir -p /srv/ceph/{osd0,osd1,mon0,mds0} && sudo chown -R $(whoami) /srv
+sudo mount /dev/ceph-volumes/ceph0 /srv/ceph/osd0
+sudo mount /dev/ceph-volumes/ceph1 /srv/ceph/osd1
+
+# Deploy new monitor node - it will generated ceph.conf and ceph.mon.keying
+sudo apt update && sudo apt-cache policy ceph-deploy
+sudo apt install -y ceph ceph-deploy
+mkdir -p ceph-cluster && cd ceph-cluster
+ceph-deploy new $local_host
+echo "osd crush chooseleaf type = 0" >> ceph.conf
+echo "osd pool default size = 1" >> ceph.conf
+echo "rbd_default_features = 1" >> ceph.conf
+echo "osd journal size = 100" >> ceph.conf
+#echo "auth cluster required = none" >> ceph.conf
+#echo "auth service required = none" >> ceph.conf
+#echo "auth client required = none" >> ceph.conf
+
+# Install ceph packages to other nodes like ceph, ceph-common, gdisk, ceph-fs-common etc.
+#ceph-deploy purgedata $local_host && ceph-deploy forgetkeys
+#ceph-conf --name mon.monitor --show-config-value admin_socket
+ceph-deploy install $local_host
+
+# Generate the keys
+ceph-deploy mon destroy $local_host    #avoid error 'monitor is not yet in quorum'
+ceph-deploy --overwrite-conf mon create-initial
+
+# Prepare OSDs
+#ceph-deploy osd prepare ${local_host}:sdb1:sdc
+#ceph-deploy disk zap ${local_host}:/srv/ceph/osd0
+#ceph-deploy disk zap ${local_host}:/srv/ceph/osd1
+ceph-deploy osd prepare ${local_host}:/srv/ceph/osd0
+ceph-deploy osd prepare ${local_host}:/srv/ceph/osd1
+
+# Active OSDs
+sudo chmod 777 /srv/ceph/osd0
+sudo chmod 777 /srv/ceph/osd1
+sudo ceph-deploy osd activate ${local_host}:/srv/ceph/osd0
+sudo ceph-deploy osd activate ${local_host}:/srv/ceph/osd1
+
+# Disctribute key, copy the keys to desired nodes
+ceph-deploy admin $local_host
+sudo chmod +r /etc/ceph/ceph.client.admin.keyring
+
+# Install mgr(ceph management process) to fix the warning - HEALTH_WARN no active mgr
+ceph-deploy mgr create $local_host
+
+# Verify - pls add more disk into rootfs if hitting the warning - mon xxx is low on available space
+sudo ceph -s
+sudo ceph osd tree 
+sudo ceph health
+
+# How to use it as rbd block devices
+sudo modprobe rbd
+sudo rados mkpool data
+sudo ceph osd pool set data min_size 1 
+sudo rbd create --size 1 -p data test1
+sudo rados -p data ls
+sudo rbd map test1 --pool data
+rbd showmapped
+sudo mkfs.ext4 /dev/rbd0
+mkdir test && sudo mount /dev/rbd0 test/
+sudo umount test && sudo rbd unmap /dev/rbd0 /dev/null 2>&1
+
+#rados pool operation
+sudo rados mkpool mypool
+sudo rados lspools
+sudo ceph osd pool set mypool min_size 1
+echo 'test' > test.txt
+sudo rados put test.txt ./test.txt --pool=mypool
+sudo rados -p mypool ls |grep test
+
+#how to find osd for one Object
+#first-level mapping. Object -> PG
+$ sudo ceph osd map mypool test.txt
+osdmap e12 pool 'mypool' (1) object 'test.txt' -> pg 1.8b0b6108 (1.0) -> up ([1], p1) acting ([1], p1)
+#second-level mapping, PG -> OSD
+$ sudo ceph pg map 1.8b0b6108
+osdmap e12 pg 1.8b0b6108 (1.0) -> up [1] acting [1]
+$ sudo ceph osd dump |grep osd.1
+osd.1 up   in  weight 1 up_from 9 up_thru 10 down_at 0 last_clean_interval [0,0) 10.48.128.235:6804/18811 10.48.128.235:6805/18811 10.48.128.235:6806/18811 10.48.128.235:6807/18811 exists,up 64002586-43c1-4438-a067-5fefcdc5eeb7
+
+
+# PG -> Pool -> CRUSH rules -> CRUSH
+
+ubuntu@test:~$ sudo ceph osd getcrushmap -o mycrushmap && crushtool -d mycrushmap > mycrushmap.txt && cat mycrushmap.txt
+5
+# begin crush map
+tunable choose_local_tries 0
+tunable choose_local_fallback_tries 0
+tunable choose_total_tries 50
+tunable chooseleaf_descend_once 1
+tunable chooseleaf_vary_r 1
+tunable chooseleaf_stable 1
+tunable straw_calc_version 1
+tunable allowed_bucket_algs 54
+
+# devices
+device 0 osd.0 class hdd
+device 1 osd.1 class hdd
+
+# types
+type 0 osd
+type 1 host
+type 2 chassis
+type 3 rack
+type 4 row
+type 5 pdu
+type 6 pod
+type 7 room
+type 8 datacenter
+type 9 region
+type 10 root
+
+# buckets
+host test {
+	id -3		# do not change unnecessarily
+	id -4 class hdd		# do not change unnecessarily
+	# weight 0.020
+	alg straw2
+	hash 0	# rjenkins1
+	item osd.0 weight 0.010
+	item osd.1 weight 0.010
+}
+root default {
+	id -1		# do not change unnecessarily
+	id -2 class hdd		# do not change unnecessarily
+	# weight 0.020
+	alg straw2
+	hash 0	# rjenkins1
+	item test weight 0.020
+}
+
+# rules
+rule replicated_rule {
+	id 0
+	type replicated
+	min_size 1
+	max_size 10
+	step take default
+	step choose firstn 0 type osd
+	step emit
+}
+
+ubuntu@test:~$ sudo ceph osd crush rule dump
+[
+    {
+        "rule_id": 0,
+        "rule_name": "replicated_rule",
+        "ruleset": 0,
+        "type": 1,
+        "min_size": 1,
+        "max_size": 10,
+        "steps": [
+            {
+                "op": "take",
+                "item": -1,
+                "item_name": "default"
+            },
+            {
+                "op": "choose_firstn",
+                "num": 0,
+                "type": "osd"
+            },
+            {
+                "op": "emit"
+            }
+        ]
+    }
+]
+
+ubuntu@test:~$ sudo ceph osd tree
+ID CLASS WEIGHT  TYPE NAME     STATUS REWEIGHT PRI-AFF 
+-1       0.01959 root default                          
+-3       0.01959     host test                         
+ 0   hdd 0.00980         osd.0     up  1.00000 1.00000 
+ 1   hdd 0.00980         osd.1     up  1.00000 1.00000 
+
+
+
+
