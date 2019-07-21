@@ -1,0 +1,368 @@
+1, 创建网桥与虚拟网卡
+sudo apt install openvswitch-switch
+sudo ovs-vsctl add-br br-test
+sudo ip link set up br-test
+sudo ip tuntap add vnic0 mode tap
+sudo ip tuntap add vnic1 mode tap
+sudo ovs-vsctl add-port br-test vnic0
+sudo ovs-vsctl add-port br-test vnic1
+sudo ip link set up vnic0
+sudo ip link set up vnic1
+
+2, 创建两个测试虚机，通过-curses参数创建，多等一会能看到登录界面
+#http_proxy=http://squid.internal:3128 wget http://download.cirros-cloud.net/0.3.4/cirros-0.3.4-x86_64-disk.img
+wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img
+cp cirros-0.4.0-x86_64-disk.img cirros-0.4.0-x86_64-disk2.img
+sudo qemu-system-x86_64 cirros-0.4.0-x86_64-disk.img -smp 1,cores=1 -m 512 -vnc :0 -device virtio-net-pci,netdev=net0,mac=52:4b:14:90:74:46 -netdev tap,id=net0,ifname=vnic0,script=no,downscript=no -name vm0 -curses
+sudo qemu-system-x86_64 cirros-0.4.0-x86_64-disk2.img -smp 1,cores=1 -m 512 -vnc :1 -device virtio-net-pci,netdev=net0,mac=2e:f4:42:c1:87:62 -netdev tap,id=net0,ifname=vnic1,script=no,downscript=no -name vm1 -curses
+
+3, 登录两个虚机设置IP (VM0: 192.168.10.100，VM1: 192.168.10.101)
+$ sudo hostname vm0
+$ sudo ip addr add 192.168.10.100/24 dev eth0
+$ ping -c 1 192.168.10.101
+  PING 192.168.10.101 (192.168.10.101): 56 data bytes
+  64 bytes from 192.168.10.101: seq=0 ttl=64 time=1.083 ms
+
+4, 查看两虚机的Port信息，看到vnic0是Port 1, vnic1是Port 2
+hua@t440p:~$ sudo ovs-vsctl get Interface vnic0 ofport
+1
+hua@t440p:~$ sudo ovs-ofctl show  br-test
+OFPT_FEATURES_REPLY (xid=0x2): dpid:00000662fc61cc4f
+n_tables:254, n_buffers:256
+capabilities: FLOW_STATS TABLE_STATS PORT_STATS QUEUE_STATS ARP_MATCH_IP
+actions: output enqueue set_vlan_vid set_vlan_pcp strip_vlan mod_dl_src mod_dl_dst mod_nw_src mod_nw_dst mod_nw_tos mod_tp_src mod_tp_dst
+ 1(vnic0): addr:7e:dc:a9:fc:cd:a4
+     config:     0
+     state:      0
+     current:    10MB-FD COPPER
+     speed: 10 Mbps now, 0 Mbps max
+ 2(vnic1): addr:7e:a3:22:75:ed:db
+     config:     0
+     state:      0
+     current:    10MB-FD COPPER
+     speed: 10 Mbps now, 0 Mbps max
+ LOCAL(br-test): addr:06:62:fc:61:cc:4f
+     config:     0
+     state:      0
+     speed: 0 Mbps now, 0 Mbps max
+OFPT_GET_CONFIG_REPLY (xid=0x4): frags=normal miss_send_len=0
+
+5, 查看流表，actions为NORMAL，就是按普通交换机处理数据包
+hua@t440p:~$ sudo ovs-ofctl dump-flows br-test
+NXST_FLOW reply (xid=0x4):
+ cookie=0x0, duration=2465.522s, table=0, n_packets=276, n_bytes=39168, idle_age=79, priority=0 actions=NORMAL
+
+6, 添加一条流，将来自vm0对应Port的数据包全部丢弃。再次从vm0上ping虚拟机vm1，ping失败.
+hua@t440p:~$ sudo ovs-ofctl del-flows br-test "in_port=1"
+hua@t440p:~$ sudo ovs-ofctl add-flow br-test "priority=10,in_port=1,actions=drop"
+hua@t440p:~$ sudo ovs-ofctl dump-flows br-test
+NXST_FLOW reply (xid=0x4):
+ cookie=0x0, duration=8.383s, table=0, n_packets=0, n_bytes=0, idle_age=8, priority=10,in_port=1 actions=drop
+ cookie=0x0, duration=2744.741s, table=0, n_packets=300, n_bytes=43312, idle_age=20, priority=0 actions=NORMAL
+$ ping -c 1 192.168.10.101
+  PING 192.168.10.101 (192.168.10.101): 56 data bytes
+
+7, 删除它，网络将恢复正常
+hua@t440p:~$ sudo ovs-ofctl dump-flows br-test
+NXST_FLOW reply (xid=0x4):
+ cookie=0x0, duration=2897.445s, table=0, n_packets=305, n_bytes=44367, idle_age=52, priority=0 actions=NORMAL
+$ ping -c 1 192.168.10.101
+  PING 192.168.10.101 (192.168.10.101): 56 data bytes
+  64 bytes from 192.168.10.101: seq=0 ttl=64 time=1.083 ms
+hua@t440p:~$ sudo tcpdump -i vnic0 icmp
+10:15:26.674662 IP 192.168.10.100 > 192.168.10.101: ICMP echo request, id 31233, seq 0, length 64
+10:15:26.675182 IP 192.168.10.101 > 192.168.10.100: ICMP echo reply, id 31233, seq 0, length 64
+
+
+8, 调试openvswitch
+注意：只有调试master分支的代码时才需要编译源码，如果是已经在Ubuntu Repo里有的包直接安装后缀为dbg的包即可。（有dbg内建包时优先安装dbg包，没有时才安装dbgsym非内建包，这点异常重要，否则会造成gdb调试时缺失符号表，这个网页有解释： https://wiki.ubuntu.com/DebuggingProgramCrash#Debug_Symbol_Packages）
+
+# Compile openvswitch with 'CFLAGS=-Wall -O2 -g'
+sudo apt-get install -y autoconf libtool sparse openssl pkg-config make gcc libssl-dev git
+git clone https://github.com/openvswitch/ovs.git
+cd ovs && ./boot.sh
+#./configure --help |grep debug
+#注：gdb debug时最好不要源码编译包，最好使用dbg包。一定要源码编译也最好不要使用诸如'--prefix=/usr'之类的变更默认的安装路径。
+#因为今后换回debian包安装时，会遇到众多包路径混乱造成的模块依赖之类的奇奇怪怪的问题。解决这些问题，除了删除包，还要使用这两个命令做清理：
+#sudo rm -rf /usr/local/lib/libvirt* & sudo rm -rf /usr/local/lib/systemd/system/libvirt* && sudo rm -rf /usr/local/sbin/virtlogd
+#./configure --with-debug --prefix=/usr --localstatedir=/var --sysconfdir=/etc --enable-ssl --with-linux=/lib/modules/`uname -r`/build
+CFLAGS="-Wall -O2 -g" ./configure --prefix=/usr --localstatedir=/var --sysconfdir=/etc --enable-ssl --with-linux=/lib/modules/`uname -r`/build
+CFLAGS="-Wall -O2 -g" make -j8
+sudo make install
+sudo make modules_install
+sudo  cp debian/openvswitch-switch.init /etc/init.d/openvswitch-switch
+
+# Install new module, need to first delete old module, or it will say 'Unknown symbo in module'
+# Also need to delete dp before deleting module, or it will say 'Module openvswitch is in use'
+sudo ovs-dpctl show && sudo ovs-dpctl del-dp ovs-system
+sudo rmmod -f openvswitch
+lsmod |grep openvswitch
+# Intall new module and it's depends
+sudo modinfo ./datapath/linux/openvswitch.ko |grep depends
+sudo modprobe nf_conntrack nf_nat nf_defrag_ipv6 libcrc32c nf_nat_ipv6 gre nf_nat_ipv4
+sudo insmod ./datapath/linux/openvswitch.ko
+lsmod |grep openvswitch
+
+# Restart openvswitch
+sudo service openvswitch-switch restart
+
+# Prepare test VM with openvswitch port and outbound bandwidth limitation
+cat > /tmp/br-phy.xml << EOF
+<network>
+  <name>br-phy</name>
+  <forward mode='bridge'/>
+  <bridge name='br-phy'/>
+  <virtualport type='openvswitch'/>
+</network>
+EOF
+sudo virsh net-destroy default
+sudo virsh net-undefine default
+sudo virsh net-define /tmp/br-phy.xml
+sudo virsh net-start br-phy && sudo virsh net-autostart br-phy
+sudo virsh net-list
+hua@node1:~$ sudo virsh net-dumpxml br-phy
+<network connections='1'>
+  <name>br-phy</name>
+  <uuid>1caff989-e3c8-4c09-9aee-c29e1f74836a</uuid>
+  <forward mode='bridge'/>
+  <bridge name='br-phy'/>
+  <virtualport type='openvswitch'/>
+</network>
+hua@node1:~$ virsh dumpxml xenial |grep '<interface' -A 13
+    <interface type='bridge'>
+      <mac address='52:54:00:ae:17:05'/>
+      <source network='br-phy' bridge='br-phy'/>
+      <virtualport type='openvswitch'>
+        <parameters interfaceid='86814ca6-615b-41cd-8d85-4873638d1b66'/>
+      </virtualport>
+      <bandwidth>
+        <outbound average='128' peak='256' burst='256'/>
+      </bandwidth>
+      <target dev='vnet0'/>
+      <model type='rtl8139'/>
+      <alias name='net0'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+    </interface>
+# Our problem is why VM's inbound tc rules are not set
+hua@node1:~$ tc qdisc show |grep vnet0
+qdisc pfifo_fast 0: dev vnet0 root refcnt 2 bands 3 priomap  1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
+
+# Set up break via gdb
+sudo service openvswitch-switch restart
+sudo virsh destroy xenial
+sudo virsh start xenial
+sudo cgdb -p `pidof ovs-vswitchd`  #用cgdb能更方便看代码
+(gdb) b iface_configure_qos
+(gdb) info break
+Num     Type           Disp Enb Address            What
+1       breakpoint     keep y   0x0000000000412dc9 in iface_configure_qos at vswitchd/bridge.c:4494
+(gdb) c
+(gdb) bt
+#0  iface_configure_qos (iface=0x940c10, qos=0x0) at vswitchd/bridge.c:4494
+#1  0x0000000000407cf7 in bridge_reconfigure (ovs_cfg=0x94e8b0) at vswitchd/bridge.c:689
+#2  0x000000000040e7b0 in bridge_run () at vswitchd/bridge.c:2998
+#3  0x0000000000414203 in main (argc=1, argv=0x7fffffffe5e8) at vswitchd/ovs-vswitchd.c:119
+(gdb) p *iface
+$1 = {port_elem = {prev = 0x93d178, next = 0x93d178}, name_node = {hash = 3297869748, next = 0x0}, ofp_port_node = {hash = 3935659133, 
+    next = 0x93e3e0}, port = 0x93d150, name = 0x949230 "vnet0", netdev = 0x94a0d0, ofp_port = 1, change_seq = 2, type = 0x60f0e0 "system", 
+  netdev_type = 0x60f0e0 "system", cfg = 0x94d790}
+
+# Trigger the break
+#sudo ovs-vsctl set interface vnet0 ingress_policing_rate=0 ingress_policing_burst=0
+sudo ovs-vsctl set interface vnet0 ingress_policing_rate=8 ingress_policing_burst=2
+#sudo ovs-vsctl set interface vnet0 ingress_policing_rate=0 ingress_policing_burst=0 #clear
+sudo ovs-vsctl list interface vnet0 |grep ingress
+sudo ovs-vsctl set port vnet0 qos=@newqos -- --id=@newqos create qos type=linux-noop
+#sudo ovs-vsctl clear Port vnet0 qos
+#sudo ovs-vsctl --all destroy qos
+
+
+9, 调试libvirt
+
+#https://libvirt.org/compiling.html
+sudo apt -y install gcc *sanlock* libyajl* libxml2* libdevmapper* libpciaccess* libnl-3-dev libnl-route-3-dev gnulib mdbtools autoconf automake libtool cmake autoconf-archive libreadline-dev
+git clone git://libvirt.org/libvirt.git
+git clone https://git.savannah.gnu.org/git/gnulib.git
+GNULIB_SRCDIR=/bak/linux/gnulib ./autogen.sh --no-git
+./autogen.sh --enable-debug --with-secdriver-apparmor=no
+make -j8
+sudo make install
+#compile DDL
+./autogen.sh --system
+make -j8
+
+echo 'user = '$(whoami) >> /etc/libvirt/qemu.conf
+sudo chown -R $(whoami):libvirtd /usr/local/var/run/libvirt/
+#Avoid: Failed to acquire pid file '/usr/local/var/run/libvirtd.pid'
+sudo service libvirtd restart
+sudo killall libvirtd && sudo libvirtd -d -p /usr/local/var/run/libvirtd.pid 
+sudo gdb -p `pidof libvirtd`
+(gdb) b virNetDevBandwidthSet
+
+#Then trigger it
+sudo virsh destroy xenial
+sudo virsh start xenial
+
+#Press 'c' to continue
+(gdb) c
+Continuing.
+[Switching to Thread 0x7f96d249c700 (LWP 7197)]
+Thread 5 "libvirtd" hit Breakpoint 1, virNetDevBandwidthSet (ifname=0x7f96ac003a80 "vnet0", bandwidth=bandwidth@entry=0x7f96ac002270, 
+    hierarchical_class=hierarchical_class@entry=false, swapped=true) at util/virnetdevbandwidth.c:200
+
+hua@node1:~$ tc qdisc show |grep vnet0
+qdisc pfifo_fast 0: dev vnet0 root refcnt 2 bands 3 priomap  1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
+qdisc ingress ffff: dev vnet0 parent ffff:fff1 ---------------- 
+
+附录1 - 使用gdb联合调试libvirtd + vswitchd找出为什么使用ovs port时libvirt设置的ingress tc rules会消失
+1, The first step, use 'sudo virsh start xenial' to trigger debugging process.
+
+hua@node1:~$ sudo virsh start xenial
+
+2, Then ovs-vswitchd will create ingress tc rules in #L375 and #L385 of libvirtd's virnetdevbandwidth.c (This is code: https://github.com/libvirt/libvirt/blob/v1.2.2-maint/src/util/virnetdevbandwidth.c#L224)
+
+hua@node1:~$ sudo gdb -p `pidof libvirtd`
+.
+.
+.
+(gdb) c
+Continuing.
+[Switching to Thread 0x7f96d2c9d700 (LWP 7196)]
+
+Thread 4 "libvirtd" hit Breakpoint 1, virNetDevBandwidthSet (ifname=0x7f96b8006b30 "vnet0", bandwidth=bandwidth@entry=0x7f96b8003f20, 
+    hierarchical_class=hierarchical_class@entry=false, swapped=true) at util/virnetdevbandwidth.c:200
+200	{
+(gdb) info b
+Num     Type           Disp Enb Address            What
+1       breakpoint     keep y   0x00007f96d936ac60 in virNetDevBandwidthSet at util/virnetdevbandwidth.c:200
+	breakpoint already hit 4 times
+(gdb) c
+Continuing.
+
+After running #L375 and #L385, we can see ingress tc rules have been created by using the command 'tc qdisc show |grep vnet0'.
+
+hua@node1:~$ tc qdisc show |grep vnet0
+qdisc pfifo_fast 0: dev vnet0 root refcnt 2 bands 3 priomap  1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
+qdisc ingress ffff: dev vnet0 parent ffff:fff1 ---------------- 
+
+
+3, Then ovs-vswitchd will stop at the break lib/netdev-linux.c:2132 we set.
+
+hua@node1:~$ sudo gdb -p `pidof ovs-vswitchd`
+.
+.
+.
+(gdb) c
+Continuing.
+[Thread 0x7fbf6ca34940 (LWP 27610) exited]
+
+Thread 1 "ovs-vswitchd" hit Breakpoint 4, netdev_linux_set_policing (netdev_=0x1517930, kbits_rate=0, kbits_burst=0)
+    at lib/netdev-linux.c:2132
+2132	    error = tc_add_del_ingress_qdisc(ifindex, false);
+(gdb) info b
+Num     Type           Disp Enb Address            What
+4       breakpoint     keep y   0x00000000005aced2 in netdev_linux_set_policing at lib/netdev-linux.c:2132
+	breakpoint already hit 5 times
+
+After running lib/netdev-linux.c:2132 (https://github.com/openvswitch/ovs/blob/master/lib/netdev-linux.c#L2132), we can see ingress tc rules are been deleted. 
+
+(gdb) p kbits_rate
+$5 = 0
+(gdb) n
+2133	    if (error) {
+(gdb) n
+[New Thread 0x7fbf6ca34940 (LWP 27739)]
+2139	    if (kbits_rate) {
+(gdb) n
+[Thread 0x7fbf6ca34940 (LWP 27739) exited]
+2155	    netdev->kbits_rate = kbits_rate;
+
+hua@node1:~$ tc qdisc show |grep vnet0
+qdisc pfifo_fast 0: dev vnet0 root refcnt 2 bands 3 priomap  1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
+
+4, Because we don't use ovs's way to configure ingress setting, tc_add_policer(netdev_, kbits_rate, kbits_burst) in #L2147 will not be run (https://github.com/openvswitch/ovs/blob/master/lib/netdev-linux.c#L2147) so that the problem occurs. This is a ovs's limitation.
+
+
+
+附录2 - 源码安装OpenvSwitch，并实验编译安装stt模块
+sudo apt-get install -y autoconf libtool sparse openssl pkg-config make gcc libssl-dev git
+git clone https://github.com/openvswitch/ovs.git
+cd ovs && ./boot.sh && ./configure --prefix=/usr --localstatedir=/var  --sysconfdir=/etc --enable-ssl --with-linux=/lib/modules/`uname -r`/build
+make -j8
+sudo make install
+sudo cp debian/openvswitch-switch.init /etc/init.d/openvswitch-switch
+# compile new module, eg: vport-stt.ko
+$ sudo modinfo ./datapath/linux/openvswitch.ko |grep depends
+depends:        nf_conntrack,nf_nat,nf_defrag_ipv6,libcrc32c,nf_nat_ipv6,gre,nf_nat_ipv4
+sudo modprobe nf_conntrack nf_nat nf_defrag_ipv6 libcrc32c nf_nat_ipv6 gre nf_nat_ipv4
+sudo make modules_install
+
+# we need to delete the module openvswitch, or it will say 'Unknown symbo in module'
+# first need to delete data-path before deleting the module openvswitch, or it will say 'the module in use'
+sudo ovs-dpctl show
+sudo ovs-dpctl del-dp ovs-system
+sudo rmmod -f openvswitch
+lsmod |grep openvswitch
+
+sudo insmod ./datapath/linux/openvswitch.ko
+sudo insmod ./datapath/linux/vport-stt.ko
+
+附录3 - 在QEMU中使用OVS Port:
+sudo apt-get -y install qemu-system qemu-kvm virtinst libvirt-bin openvswitch-datapath-source openvswitch-controller openvswitch-switch virt-top virt-manager python-libvirt
+sudo ovs-vsctl add-br br-mano
+sudo ovs-vsctl add-port br-mano eth2
+sudo virsh net-destroy default
+sudo virsh net-define /tmp/br-mano.xml
+#sudo virsh net-undefine default
+sudo virsh net-start br-mano  
+sudo virsh net-autostart br-mano
+cat /tmp/br-mano.xml
+<network>
+  <name>br-mano</name>
+  <forward mode='bridge'/>
+  <bridge name='br-mano'/>
+  <virtualport type='openvswitch'/>
+</network>
+
+附录4 - 查看OVS DB:
+cat /etc/openvswitch/conf.db
+sudo ovsdb-client dump
+sudo ovsdb-client list-dbs
+
+附录5 - OVS VLAN:
+#Create ACCESS VLAN:
+sudo ovs-vsctl set port vnic0 tag=2
+#sudo ovs-vsctl remove port vnic0 tag 2
+#Enable both ACCESS VLAN as well as TRUNK VLAN:
+sudo ovs-vsctl set port vnic0 vlan_mode=trunk trunks=2    #access, native-tagged, native-untagged, trunk
+#sudo ovs-vsctl set port vnic0 vlan_mode=access trunks=[]
+
+Verify VLAN
+Inside VM: ping 10.0.3.1 -I eth0
+
+sudo  tcpdump -i eth1  -e -n 'arp or icmp' and src host 192.168.10.100
+listening on eth1, link-type EN10MB (Ethernet), capture size 65535 bytes
+11:38:20.754894 52:54:00:f2:17:37 > ff:ff:ff:ff:ff:ff, ethertype 802.1Q (0x8100), length 46: vlan 2, p 0, ethertype ARP, Request who-has 10.0.3.1 tell 10.0.3.2, length 28
+
+附录6 - OVS GRE TUNNEL:
+sudo ovs-vsctl add-port br2 gre0 -- set interface gre0 type=gre options:remote_ip=192.168.1.155
+
+附录7 - 找不着源码 - debug symbol中使用了相对路径 - https://blogs.oracle.com/linux/8-gdb-tricks-you-should-know-v2
+下面找不着源码的原因是debug sysmbol中使用了相对路径，另一种方法是可以先cd /bak/linux/libvirt/src/qemu/.deps后再运行gdb命令
+(gdb) list main
+1136    ../../../daemon/libvirtd.c: No such file or directory.
+(gdb) directory /bak/linux/libvirt/daemon
+Source directories searched: /bak/linux/libvirt/daemon:/bak/linux/libvirt:$cdir:$cwd
+(gdb) list main
+warning: Source file is more recent than executable.
+1136                      "      $XDG_RUNTIME_DIR/libvirt/libvirtd.pid\n"
+1137                      "\n"));
+1138        }
+1139    }
+1140
+1141    int main(int argc, char **argv) {
+1142        virNetDaemonPtr dmn = NULL;
+1143        virNetServerPtr srv = NULL;
+1144        virNetServerPtr srvAdm = NULL;
+1145        char *remote_config_file = NULL;
+
