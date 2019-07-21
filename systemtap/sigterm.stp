@@ -1,0 +1,13 @@
+#!/usr/bin/stap -g                                                                                                    
+
+# Find the source of signals on systemtap
+# eg:qemu-system-x86_64: terminating on signal 15 from pid 5170
+# sudo stap -g --skip-badvars sigterm.stp $(pidof qemu-system-x86_64) | tee -a log.txt
+
+probe signal.send {
+  if (sig_name == "SIGTERM")
+    printf("[%s] %s was sent to %s (pid:%d) by %s uid:%d\n",
+           tz_ctime(gettimeofday_s()), sig_name, pid_name, sig_pid, execname(), uid());
+    #print_backtrace();
+}
+

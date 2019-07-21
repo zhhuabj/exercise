@@ -1,0 +1,14 @@
+#!/usr/bin/stap -g
+
+global count = 0
+
+probe module("virtio_ring").function("virtqueue_*_buf").call {
+	# Increase to throttle the output
+        if (count++ > 0) {
+                vr =  &@module_container_of($_vq, "virtio_ring", "struct vring_virtqueue", vq)
+                if (kernel_string($_vq->name) == "output.0"){ printf("TX ")}
+                else { printf("RX ")}
+                printf("%s %u (%s) \tlast_used_idx=%u vring_used=%u vring_avail=%u\n", probefunc(), vr->vring->desc->addr, kernel_string($_vq->name), vr->last_used_idx, vr->vring->used->idx, vr->vring->avail->idx)
+                count = 0
+        }
+}

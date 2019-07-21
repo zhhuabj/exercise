@@ -1,0 +1,41 @@
+#!/usr/bin/stap -g
+# https://sourceware.org/systemtap/langref/Components_SystemTap_script.html
+# https://sourceware.org/systemtap/SystemTap_Beginners_Guide/targetvariables.html
+#static void check_report_connect_error(CharDriverState *chr,
+#                                       Error *err)
+#{
+#    TCPCharDriver *s = chr->opaque;
+#    if (!s->connect_err_reported) {
+#        error_report("Unable to connect character device %s: %s",
+#                     chr->label, error_get_pretty(err));
+#        s->connect_err_reported = true;
+#    }
+#    qemu_chr_socket_restart_timer(chr);
+#}
+
+#void error_vprintf(const char *fmt, va_list ap)
+#{
+#    if (cur_mon && !monitor_cur_is_qmp()) {
+#        monitor_vprintf(cur_mon, fmt, ap);
+#    } else {
+#        vfprintf(stderr, fmt, ap);
+#    }
+#}
+
+
+#function res_label:string(addr:long) %{
+#    THIS->__retvalue = "bb";
+#%}
+
+probe process("/usr/bin/qemu-system-x86_64").function("error_vprintf") {
+    printf("=> %s(%s)\n", probefunc(), $$parms);
+}
+
+probe process("/usr/bin/qemu-system-x86_64").function("error_vprintf").return {
+    printf("<= %s\n", probefunc());
+}
+
+#probe process("/usr/bin/qemu-system-x86_64").function("error_vprintf@util/qemu-error.c:40") {
+#    printf("   ap=%s\n", $$ap);  
+#}
+

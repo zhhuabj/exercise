@@ -1,0 +1,2 @@
+scripts/Makefile.build:316: recipe for target '/tmp/stapqVO0sX/stap_3433d065dbf83328d29b33ab58c32e71_65435_src.o' failed
+Makefile:1550: recipe for target '_module_/tmp/stapqVO0sX' failed

@@ -1,0 +1,22 @@
+#!/usr/bin/stap -g
+# Print TX/RX VQ pairs per device for a particular QEMU PID
+
+global count = 0
+
+function findqemupid:string(worker) {
+      worker_execname = pid2execname(worker)
+      return substr(worker_execname, 6, strlen(worker_execname))
+}
+
+
+probe module("vhost").function("vhost_signal"){
+	# Increase to throttle the output
+	if (count++ > 0){
+		if (($dev->nvqs > 1) && (@1 ==  findqemupid($vq->dev->worker->pid))) {
+			printf("\nRX %u values: old=%u new=%u last_used_event=%u\t vring_used=%u vring_avail=%u\n", $dev->vqs[0]->desc->addr, $dev->vqs[0]->signalled_used, $dev->vqs[0]->last_used_idx, $dev->vqs[0]->last_used_event, $dev->vqs[0]->used->idx, $dev->vqs[0]->avail->idx)
+			printf("TX %u values: old=%u new=%u last_used_event=%u\t vring_used=%u vring_avail=%u\n", $dev->vqs[1]->desc->addr, $dev->vqs[1]->signalled_used, $dev->vqs[1]->last_used_idx, $dev->vqs[1]->last_used_event, $dev->vqs[1]->used->idx, $dev->vqs[1]->avail->idx)
+		}
+		count = 0
+	}
+}
+
