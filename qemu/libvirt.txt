@@ -1,0 +1,32 @@
+sudo -i
+useradd -g libvirt -G root -s /bin/bash -d /home/demo -m demo
+passwd demo
+echo 'demo     ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+echo 'user = "demo"' >> /etc/libvirt/qemu.conf
+echo 'group = "root"' >> /etc/libvirt/qemu.conf
+#Use tcp instead of tls to avoid the error related to '/var/run/libvirt/libvirt-sock' caused by 'CA certificate /etc/pki/CA/cacert.pem'
+#This error may occur when upgrading libvirt, old libvirt was using tcp (-l) option, but new libvirt doesn't use tcp 
+#https://wiki.libvirt.org/page/Failed_to_connect_to_the_hypervisor
+echo 'listen_tls = 0' >> /etc/libvirt/libvirtd.conf
+echo 'listen_tcp = 1' >> /etc/libvirt/libvirtd.conf
+echo 'auth_tcp = "none"' >> /etc/libvirt/libvirtd.conf
+echo 'libvirtd_opts="-l"' >> /etc/default/libvirt-bin
+exit
+su - demo
+groups
+#sudo usermod -a -G libvirt $(whoami) && id demo |grep libvirt
+#sudo adduser $(id -un) libvirtd
+#sudo gpasswd -d demo root
+#/usr/sbin/libvirtd -l
+#fix the error '/var/run/libvirt/virtlogd-sock': No such file or directory
+/usr/sbin/virtlogd -p /var/run/libvirt/virtlogd-sock -d
+sudo service libvirt-bin restart
+sudo virsh list --all
+
+How to bug fix
+$ ls -l /var/run/libvirt/libvirt-sock
+ srwxrwx--- 1 root libvirtd 0 Nov 21 12:27 /var/run/libvirt/libvirt-sock
+$ ls -l /dev/kvm
+crw-rw---- 1 root libvirtd 10, 232 Nov 21 05:05 /dev/kvm
+$ sudo chown root:libvirtd /dev/kvm
+$ sudo rmmod kvm & sudo modprobe -a kvm

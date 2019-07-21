@@ -1,0 +1,72 @@
+1, 确认host bios里是否已经打开了VT-x/VT-d特性及嵌套虚拟化特性
+#On underlying host, enable kvm nested, if the result of cat command is [N], change like follows and reboot the system
+cat /sys/module/kvm_intel/parameters/nested
+sudo modprobe -r kvm_intel
+sudo modprobe kvm_intel nested=1
+echo 'options kvm_intel nested=1' >> /etc/modprobe.d/qemu-system-x86.conf  #reboot the system
+#On underlying host, need to change to use <cpu mode='host-passthrough'/> to make kvm nested work
+sudo apt install -y libvirt-clients cpu-checker
+sudo virsh edit openstack  #<cpu mode='host-passthrough'/>
+sudo virsh destroy openstack && sudo virsh start openstack
+#then in VM, kvm-ok command can be used to verify if kvm nested feature has been enabled
+
+2, 安装KVM、QEMU、Libvirt与OpenvSwitch
+#sudo apt purge libvirt0 libvirt-bin
+sudo apt install -y qemu-kvm libvirt-bin openvswitch-switch virt-manager xtightvncviewer
+
+3, 定义ovs网络
+sudo ovs-vsctl add-br br-test & sudo ovs-vsctl show
+#sudo ovs-vsctl -- --may-exist add-port br-test eth0 -- set interface eth0 type=internal
+cat > /tmp/br-test.xml << EOF
+<network>
+  <name>br-test</name>
+  <forward mode='bridge'/>
+  <bridge name='br-test'/>
+  <virtualport type='openvswitch'/>
+</network>
+EOF
+sudo virsh net-define /tmp/br-test.xml
+sudo virsh net-start br-test && sudo virsh net-autostart br-test
+sudo virsh net-list
+
+4, 通过virt-install GUI模式创建虚机 (vnc, spice)
+axel http://releases.ubuntu.com/16.04.3/ubuntu-16.04.3-desktop-amd64.iso 
+qemu-img create -f qcow2 test.qcow2 12G
+sudo virt-install --connect qemu:///system --name test1 --ram 512 --vcpus 1 \
+   --arch=x86_64 -c ./ubuntu-16.04.3-desktop-amd64.iso \
+   --graphics vnc,listen=0.0.0.0 --noautoconsole \
+   --controller scsi,model=virtio-scsi,index=0 \
+   --disk path=test.qcow2,format=qcow2,size=12,bus=scsi,cache=writeback \
+   --network=network=br-test,mac=52:54:00:63:7e:7c,model=virtio \
+   --network=network=br-test,mac=52:54:00:63:7e:7d,model=virtio
+sudo virsh list  && virsh --connect qemu:///system list
+sudo virsh vncdisplay test1
+vncviewer 127.0.0.1:5900
+
+SPICE: --noautoconsole --graphics spice --video qxl --channel spicevmc \
+PXE:   --pxe --boot network,hd,menu=on
+ENABLE LOG: http://blog.csdn.net/quqi99/article/details/52182878 
+
+5, 通过curses text模式访问虚机
+sudo ip tuntap add vnic0 mode tap
+sudo ovs-vsctl add-port br-test vnic0
+sudo ip link set up vnic0
+wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img
+sudo qemu-system-x86_64 cirros-0.4.0-x86_64-disk.img -smp 1,cores=1 -m 512 -vnc :0 -device virtio-net-pci,netdev=net0,mac=52:4b:14:90:74:45 -netdev tap,id=net0,ifname=vnic0,script=no,downscript=no -name vm0 -curses
+
+6, 通过console text模式访问虚机
+#http://mirrors.cloud.tencent.com/ubuntu/dists/bionic/main/installer-amd64/
+sudo virt-install --name bionic --ram 4096 --disk path=bionic.qcow2,size=8  --vcpus 1 \
+--os-type linux --os-variant ubuntu18.04 --network bridge=virbr0 \
+--graphics none --console pty,target_type=serial \
+--location 'http://archive.ubuntu.com/ubuntu/dists/bionic/main/installer-amd64/' --extra-args 'console=ttyS0,115200n8 serial'
+sudo virsh --connect qemu:///system console bionic
+# Using existing qcow2 image (don’t use --location)
+sudo virsh destroy cirros && sudo virsh undefine cirros
+wget --no-check-certificate https://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img
+sudo virt-install --name=cirros --ram=512 --vcpus=1 --disk path=cirros-0.4.0-x86_64-disk.img,format=qcow2 --import --network bridge=virbr0 --virt-type qemu --graphics none --console pty,target_type=serial                                                 #virsh-install will help create libvirt xml configuration file and start vm
+sudo virsh edit cirros                                    #do some change, eg adding ceph support
+sudo virsh destroy cirros  && sudo virsh start cirros     #restart vm
+sudo virsh console cirros                                 #re-connect console connection again
+
+
