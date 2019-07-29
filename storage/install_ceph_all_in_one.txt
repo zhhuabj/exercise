@@ -1,6 +1,7 @@
 # Precondition - setup host entry and ssh password-free login
 local_host="`hostname --fqdn`"
-local_ip=`host $local_host 2>/dev/null | awk '{print $NF}' |head -n 1`
+#local_ip=`host $local_host 2>/dev/null | awk '{print $NF}' |head -n 1`
+local_ip='<your-ip>'
 sudo bash -c 'cat >> /etc/hosts' << EOF
 `echo $local_ip`   `echo $local_host`
 EOF
@@ -27,13 +28,13 @@ sudo apt update && sudo apt-cache policy ceph-deploy
 sudo apt install -y ceph ceph-deploy
 mkdir -p ceph-cluster && cd ceph-cluster
 ceph-deploy new $local_host
-echo "osd crush chooseleaf type = 0" >> ceph.conf
-echo "osd pool default size = 1" >> ceph.conf
-echo "rbd_default_features = 1" >> ceph.conf
-echo "osd journal size = 100" >> ceph.conf
-#echo "auth cluster required = none" >> ceph.conf
-#echo "auth service required = none" >> ceph.conf
-#echo "auth client required = none" >> ceph.conf
+echo "osd crush chooseleaf type = 0" |sudo tee -a ceph.conf
+echo "osd pool default size = 1" |sudo tee -a ceph.conf
+echo "rbd_default_features = 1" |sudo tee -a ceph.conf
+echo "osd journal size = 100" |sudo tee -a ceph.conf
+#echo "auth cluster required = none" |sudo tee -a ceph.conf
+#echo "auth service required = none" |sudo tee -a ceph.conf
+#echo "auth client required = none" |sudo tee -a ceph.conf
 
 # Install ceph packages to other nodes like ceph, ceph-common, gdisk, ceph-fs-common etc.
 #ceph-deploy purgedata $local_host && ceph-deploy forgetkeys
