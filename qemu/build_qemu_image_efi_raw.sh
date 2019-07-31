@@ -133,7 +133,8 @@ grub-mkimage \
     efi_uga ls search search_label search_fs_uuid search_fs_file gfxterm gfxterm_background \
     gfxterm_menu test all_video loadenv exfat ext2 ntfs btrfs hfsplus udf
 
-#e2label ${${LOOPDEV}}p3 ${BOOTLABEL}
+#make sure ${BOOTLABEL} is not empty
+#e2label ${LOOPDEV}p3 ${BOOTLABEL}
 #blkid
 cat <<GRUBCFG > ${MOUNTDIR}/EFI/BOOT/grub.cfg
 search --label "${BOOTLABEL}" --set prefix
