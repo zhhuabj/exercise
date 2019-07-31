@@ -18,7 +18,7 @@ set -xe
 if [ ! -f "os.img" ]; then
   truncate -s 5G os.img
 fi
-is_looped=$(losetup -a |grep 'os.img')
+is_looped=$(losetup -a |grep "os.img")
 if [ ! -n "$is_looped" ]; then
   LOOPDEV=$(losetup --find --show os.img)
 fi
