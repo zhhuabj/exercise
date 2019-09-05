@@ -1,0 +1,205 @@
+#juju deploy ./b/octavia/openstack.yaml --overlay ./b/octavia/o/octavia.yaml --overlay ./b/octavia/o/neutron-dvr.yaml --overlay ./b/octavia/o/neutron-dvr-snat.yaml
+
+mkdir ./b/octavia
+
+cat << EOF | sudo tee ./b/octavia/openstack.yaml
+# Variables
+debug:                      &debug                     True
+verbose:                    &verbose                   True
+openstack_origin:           &openstack_origin          cloud:bionic-stein
+source:                     &source                    cloud:bionic-stein
+num_compute_units:          &num_compute_units         2
+
+ssl_ca:                     &ssl_ca                    
+ssl_cert:                   &ssl_cert                  
+ssl_key:                    &ssl_key                   
+
+series: bionic
+applications:
+  rabbitmq-server:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/rabbitmq-server
+    constraints: mem=1G
+    options:
+      source: *source
+  keystone:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/keystone
+    constraints: mem=1G
+    options:
+      debug: *debug
+      verbose: *verbose
+      admin-password: openstack
+      admin-token: ubuntutesting
+      openstack-origin: *openstack_origin
+      ssl_ca: *ssl_ca
+      ssl_cert: *ssl_cert
+      ssl_key: *ssl_key
+  openstack-dashboard:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/openstack-dashboard
+    constraints: mem=1G
+    options:
+      openstack-origin: *openstack_origin
+      webroot: '/'
+  nova-compute:
+    charm: cs:~openstack-charmers-next/nova-compute
+    num_units: *num_compute_units
+    constraints: mem=4G
+    options:
+      debug: *debug
+      verbose: *verbose
+      enable-live-migration: True
+      enable-resize: True
+      migration-auth-type: ssh
+      openstack-origin: *openstack_origin
+      force-raw-images: false  # disable for stsstack since conversion kills the disks and is not needed
+  nova-cloud-controller:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/nova-cloud-controller
+    constraints: mem=2G
+    options:
+      debug: *debug
+      verbose: *verbose
+      network-manager: Neutron
+      openstack-origin: *openstack_origin
+      ssl_ca: *ssl_ca
+      ssl_cert: *ssl_cert
+      ssl_key: *ssl_key
+  neutron-api:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/neutron-api
+    constraints: mem=1G
+    options:
+      debug: *debug
+      verbose: *verbose
+      neutron-security-groups: True
+      flat-network-providers: physnet1
+      enable-ml2-port-security: True
+      openstack-origin: *openstack_origin
+      ssl_ca: *ssl_ca
+      ssl_cert: *ssl_cert
+      ssl_key: *ssl_key
+  neutron-openvswitch:
+    charm: cs:~openstack-charmers-next/neutron-openvswitch
+    options:
+      debug: *debug
+      verbose: *verbose
+      firewall-driver: openvswitch
+  cinder:
+    num_units: 1
+    constraints: mem=2G
+    charm: cs:~openstack-charmers-next/cinder
+    options:
+      debug: *debug
+      verbose: *verbose
+      block-device: /var/disk.img
+      ephemeral-unmount: "/mnt"
+      overwrite: "true"
+      glance-api-version: 2
+      openstack-origin: *openstack_origin
+      ssl_ca: *ssl_ca
+      ssl_cert: *ssl_cert
+      ssl_key: *ssl_key
+  glance:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/glance
+    constraints: mem=1G
+    options:
+      debug: *debug
+      verbose: *verbose
+      openstack-origin: *openstack_origin
+      ssl_ca: *ssl_ca
+      ssl_cert: *ssl_cert
+      ssl_key: *ssl_key
+  mysql:
+    num_units: 1
+    charm: cs:~openstack-charmers-next/percona-cluster
+    constraints: mem=4G
+    options:
+      dataset-size: 50%
+      max-connections: 20000
+      root-password: ChangeMe123
+      sst-password: ChangeMe123
+      source: *source
+relations:
+  - [ keystone, mysql ]
+  - [ "nova-cloud-controller:shared-db", mysql ]
+  - [ "nova-cloud-controller:amqp", rabbitmq-server ]
+  - [ nova-cloud-controller, glance ]
+  - [ nova-cloud-controller, keystone ]
+  - [ nova-compute, nova-cloud-controller ]
+  - - nova-compute
+    - rabbitmq-server:amqp
+  - [ nova-compute, glance ]
+  - [ glance, mysql ]
+  - [ glance, keystone ]
+  - [ glance, "cinder:image-service" ]
+  - [ glance, rabbitmq-server ]
+  - [ cinder, mysql ]
+  - [ cinder, rabbitmq-server ]
+  - [ cinder, nova-cloud-controller ]
+  - [ cinder, keystone ]
+  - [ "openstack-dashboard:identity-service", "keystone:identity-service" ]
+  - [ neutron-api, mysql ]
+  - [ neutron-api, rabbitmq-server ]
+  - [ neutron-api, nova-cloud-controller ]
+  - [ neutron-api, neutron-openvswitch ]
+  - [ neutron-api, keystone ]
+  - [ neutron-openvswitch, nova-compute ]
+  - [ neutron-openvswitch, rabbitmq-server ]
+EOF
+
+cat << EOF | sudo tee ./b/octavia/o/octavia.yaml
+# Variables
+debug:                      &debug                     True
+openstack_origin:           &openstack_origin          cloud:bionic-stein
+
+applications:
+  octavia:
+    charm: cs:~openstack-charmers-next/octavia
+    num_units: 1
+    options:
+      debug: *debug
+      openstack-origin: cloud:bionic-stein
+  octavia-dashboard:
+    charm: cs:~openstack-charmers-next/octavia-dashboard
+relations:
+  - [ octavia:shared-db, mysql:shared-db ]
+  - [ octavia:identity-service, keystone:identity-service ]
+  - [ octavia:amqp, rabbitmq-server:amqp ]
+  - [ octavia:neutron-api, neutron-api:neutron-load-balancer ]
+  - [ octavia:neutron-openvswitch, neutron-openvswitch:neutron-plugin ]
+  - [ octavia-dashboard:dashboard, openstack-dashboard:dashboard-plugin ]
+EOF
+
+cat << EOF | sudo tee ./b/octavia/o/neutron-dvr.yaml
+applications:
+  neutron-api:
+    options:
+      enable-dvr: True
+      l2-population: True
+  neutron-openvswitch:
+    options:
+      data-port: 'br-data:ens7'
+      flat-network-providers: physnet1
+      bridge-mappings: physnet1:br-data
+      vlan-ranges: ''
+EOF
+
+cat << EOF | sudo tee ./b/octavia/o/neutron-dvr-snat.yaml
+# Variables
+dns_servers:                &dns_servers               '10.198.200.1'
+
+applications:
+  neutron-openvswitch:
+    options:
+      use-dvr-snat: True
+      enable-local-dhcp-and-metadata: True
+      data-port: 'br-data:ens7'
+      dns-servers: *dns_servers
+EOF
+
+
+
+
