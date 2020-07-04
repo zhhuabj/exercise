@@ -1,19 +1,10 @@
 # Usage
-# mkdir ~/.pip/
-#cat << EOF > ~/.pip/pip.conf
-#[global]
-#index-url = https://mirrors.ustc.edu.cn/pypi/web/simple
-#format = columns
-#EOF
-# sudo mkdir -p /bak/openstack && sudo chown -R $(whoami) /bak/openstack && cd /bak/openstack
-# git clone https://github.com/openstack/devstack.git && cd devstack
-# wget https://raw.githubusercontent.com/zhhuabj/exercise/master/o7k/localrc
-# ./unstack.sh
-#./clean.sh
+#sudo mkdir /bak && sudo chown -R $(whoami) /bak && cd /bak
+#git clone https://github.com/openstack-dev/devstack.git
+#cd /bak/devstack
+#wget https://raw.githubusercontent.com/zhhuabj/mytools/master/openstack/localrc
 #./stack.sh
 #sudo systemctl status devstack@*
-#sudo systemctl list-units |grep devstack |grep failed |awk '{print $2}'
-#sudo systemctl stop "devstack@*"
 #sudo journalctl -f --unit devstack@n-cpu.service
 #sudo journalctl -a --unit devstack@n-cpu.service
 #source openrc
@@ -24,12 +15,12 @@
 #export http_proxy=http://squid.internal:3128
 
 #OFFLINE=True
-DEST=/bak/openstack  #or sudo su stack && cd /opt/stack
+DEST=/bak/openstack
 mkdir -p $DEST
 unset http_proxy
 unset https_proxy
 #sudo route del -net 10.0.1.0/24 gw 192.168.101.3 > /dev/null 2>&1
-sudo apt-get -y install openvswitch-switch qemu-kvm libvirt-bin
+sudo apt -y install openvswitch-switch qemu-kvm libvirt-clients libvirt-daemon-system bridge-utils
 #sudo virsh net-destroy default
 sudo ovs-vsctl del-br br-phy
 sudo ovs-vsctl -- --may-exist add-br br-phy
@@ -41,30 +32,25 @@ sudo chown -R $(whoami) /opt/stack/
 #when using type=internal, it can not run the command "sudo ovs-ofctl dump-flows br-phy"
 #sudo ovs-vsctl -- --may-exist add-port br-phy eth0 -- set interface eth0 type=internal
 #sudo systemctl disable libvirt-guests
-sudo apt-get -y install python-setuptools python-dev libxml2-dev libxslt1-dev python-pip python3-pip libpython-dev zlib1g-dev build-essential
-#sudo pip install --upgrade setuptool
-#sudo easy_install pip
-#sudo pip install --upgrade pip
+sudo apt -y install python3.8-dev python-setuptools libxslt1-dev zlib1g-dev build-essential -y
 # MULTI-HOST
 # ENABLED_SERVICES=n-cpu,rabbit,neutron,q-agt
-#GIT_BASE="https://opendev.org"
+GIT_BASE="https://git.openstack.org"
+#enable_plugin neutron-lbaas https://git.openstack.org/openstack/neutron-lbaas
 ENABLED_SERVICES=rabbit,mysql,key,g-api,g-reg
-ENABLED_SERVICES+=,n-api,n-crt,n-obj,n-cpu,n-cond,n-sch,n-cauth,n-novnc
+ENABLED_SERVICES+=,n-api,n-crt,n-obj,n-cpu,n-cond,n-sch,n-cauth,n-novnc,placement-api,n-super-cond,n-cond-cell1
 ENABLED_SERVICES+=,q-svc,q-agt,q-dhcp,q-l3,q-meta,neutron
 disable_service q-metering
 Q_USE_ROOTWRAP=True
 Q_USE_ROOTWRAP_DAEMON=False
-IDENTITY_API_VERSION=3
+ENABLE_IDENTITY_V2=False
 enable_service placement-api
 heartbeat_timeout_threshold=7200
-#openstack --debug compute service list
-#g-api did not start, sudo systemctl start devstack@g-api.service
-SERVICE_TIMEOUT=300     #g-api did not start, sudo systemctl start devstack@g-api.service
 #ENABLED_SERVICES+=,q-svc,q-agt,q-dhcp,q-l3,q-meta,neutron,q-vpn
 #ENABLED_SERVICES+=,horizon
 
 # OVN
-#enable_plugin networking-ovn http://opendev.org/openstack/networking-ovn
+#enable_plugin networking-ovn http://git.openstack.org/openstack/networking-ovn
 #enable_service ovn-northd
 #enable_service ovn-controller
 # We have to disable the neutron L2 agent. OVN does not use the L2 agent.
@@ -83,7 +69,7 @@ OVS_BRIDGE_MAPPINGS=physnet1:br-phy
 
 # Ceph
 sudo rm -rf /var/lib/ceph/mon/ceph-`hostname`
-ENABLED_SERVICES+=,ceph
+#ENABLED_SERVICES+=,ceph
 CEPH_LOOPBACK_DISK_SIZE=3G
 CEPH_CONF=/etc/ceph/ceph.conf
 CEPH_REPLICAS=1
@@ -98,16 +84,16 @@ CINDER_BAK_CEPH_POOL=backeups
 CINDER_BAK_CEPH_USER=cind-backeups
 CINDER_ENABLED_BACKENDS=ceph,lvm
 GLANCE_CEPH_USER=glancy
-GLANCE_CEPH_POOL=image
+GLANCE_CEPH_POOL=imajeez
 NOVA_CEPH_POOL=vmz
 
 #Enable tacker
 #TACKER_BRANCH=master
-#enable_plugin heat https://opendev.org/openstack/heat $TACKER_BRANCH
-#enable_plugin networking-sfc https://opendev.org/openstack/networking-sfc $TACKER_BRANCH
-#enable_plugin barbican https://opendev.org/openstack/barbican $TACKER_BRANCH
-#enable_plugin mistral https://opendev.org/openstack/mistral $TACKER_BRANCH
-#enable_plugin tacker https://opendev.org/openstack/tacker $TACKER_BRANCH
+#enable_plugin heat https://git.openstack.org/openstack/heat $TACKER_BRANCH
+#enable_plugin networking-sfc https://git.openstack.org/openstack/networking-sfc $TACKER_BRANCH
+#enable_plugin barbican https://git.openstack.org/openstack/barbican $TACKER_BRANCH
+#enable_plugin mistral https://git.openstack.org/openstack/mistral $TACKER_BRANCH
+#enable_plugin tacker https://git.openstack.org/openstack/tacker $TACKER_BRANCH
 
 HOST_IP=172.16.1.1
 SERVICE_HOST=$HOST_IP
@@ -142,12 +128,11 @@ SCREEN_LOGDIR=$DEST/logs
 LOG_COLOR=False
 Q_USE_DEBUG_COMMAND=False
 APACHE_ENABLED_SERVICES+=keystone
-KEYSTONE_TOKEN_FORMAT=fernet
+KEYSTONE_TOKEN_FORMAT=uuid
 USE_SSL=False
 disable_service tls-proxy
-IMAGE_URLS+=",http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img"
+IMAGE_URLS+=",http://download.cirros-cloud.net/0.5.1/cirros-0.5.1-x86_64-disk.img"
 DOWNLOAD_DEFAULT_IMAGES=False
-#IMAGE_URLS="https://cloud-images.ubuntu.com/trusty/current/trusty-server-cloudimg-amd64-disk1.img,http://download.cirros-cloud.net/0.3.4/cirros-0.3.4-x86_64-disk.img"
 #IPSEC_PACKAGE=strongswan
 
 # Neutron Agent configuration
@@ -190,15 +175,15 @@ Q_ML2_PLUGIN_MECHANISM_DRIVERS=openvswitch,linuxbridge,l2population
 #NEUTRON_BRANCH=stable/grizzly
 #NEUTRONCLIENT_REPO=https://github.com/openstack/python-neutronclient.git
 #NEUTRONCLIENT_BRANCH=stable/grizzly
-#CEILOMETER_REPO=git://opendev.org/openstack/ceilometer.git
-#CEILOMETERCLIENT_REPO=git://opendev.org/openstack/python-ceilometerclient.git
-#HEAT_REPO=git://opendev.org/openstack/heat.git
+#CEILOMETER_REPO=git://git.openstack.org/openstack/ceilometer.git
+#CEILOMETERCLIENT_REPO=git://git.openstack.org/openstack/python-ceilometerclient.git
+#HEAT_REPO=git://git.openstack.org/openstack/heat.git
 #HEAT_BRANCH=master
-#SWIFT_REPO=git://opendev.org/openstack/swift.git
+#SWIFT_REPO=git://git.openstack.org/openstack/swift.git
 #SWIFT_BRANCH=master
-#OPENSTACKCLIENT_REPO=git://opendev.org/openstack/python-openstackclient.git
+#OPENSTACKCLIENT_REPO=git://git.openstack.org/openstack/python-openstackclient.git
 #OPENSTACKCLIENT_BRANCH=master
-#SOLUM_REPO=git://opendev.org/stackforge/solum.git
+#SOLUM_REPO=git://git.openstack.org/stackforge/solum.git
 #SOLUM_BRANCH=master
 
 # Enable Ceilometer
@@ -226,7 +211,7 @@ Q_ML2_PLUGIN_MECHANISM_DRIVERS=openvswitch,linuxbridge,l2population
 
 #https://wiki.openstack.org/wiki/Docker
 #export INSTALLDIR=/bak/openstack && cd $INSTALLDIR/nova-docker
-#git clone https://opendev.org/stackforge/nova-docker
+#git clone https://git.openstack.org/stackforge/nova-docker
 #./contrib/devstack/prepare_devstack.sh
 #VIRT_DRIVER=docker
 #DEFAULT_IMAGE_NAME=cirros
