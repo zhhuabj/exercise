@@ -1,20 +1,34 @@
-#https://github.com/CanonicalLtd/microstack
-sudo snap install microstack --classic --candidate
-microstack.launch i1
-#microstack.openstack server create --flavor m1.small --nic net-id=test --image cirros my-microstack-server
-chromium-browser http://10.20.20.1  #admin/keystone
-microstack.openstack server list
+# https://opendev.org/x/microstack
+
+sudo snap install microstack --devmode --edge
+sudo -i  #fix 'sudo: microstack.init: command not found'
+export PATH=/snap/bin:$PATH
+microstack.init --auto
+exit
+#chromium-browser http://10.20.20.1  #admin/keystone
+
 microstack.openstack network list
+microstack.openstack flavor list
+microstack.openstack keypair list
+microstack.openstack image list
+microstack.openstack security group rule list
 #sudo snap alias microstack.openstack openstack
+
+#microstack.openstack server create --flavor m1.small --nic net-id=test --image cirros my-microstack-server
+microstack.launch cirros --name i1
+
 SECGROUP_ID=`microstack.openstack security group list --project admin -f value -c ID`
 microstack.openstack security group rule create $SECGROUP_ID --proto tcp --remote-ip 0.0.0.0/0 --dst-port 22
 microstack.openstack security group rule create $SECGROUP_ID --proto icmp --remote-ip 0.0.0.0/0
-ssh -i ~/.ssh/id_microstack cirros@<IP>
+ssh -i ~/.ssh/id_microstack cirros@<ip-address>
+
 sudo snap disable microstack
 sudo snap enable microstack
+sudo -i
+microstack.remove --auto
+microstack.remove --auto --purge
+exit
 
 sudo snap logs microstack
-sudo unsquashfs -l /var/lib/snapd/snaps/microstack_127.snap
-ubuntu@openstack:~$ mount |grep microstack
-/var/lib/snapd/snaps/microstack_127.snap on /snap/microstack/127 type squashfs (ro,nodev,relatime,x-gdu.hide)
-
+mount |grep microstack
+sudo unsquashfs -l /var/lib/snapd/snaps/microstack_205.snap
