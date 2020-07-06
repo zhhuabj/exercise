@@ -68,8 +68,11 @@ apt-get install -y uml-utilities
 
 #wget http://download.cirros-cloud.net/0.5.1/cirros-0.5.1-x86_64-disk.img
 #qemu-img convert -f qcow2 -O raw cirros-0.5.1-x86_64-disk.img cirros-0.5.1-x86_64-disk.raw
-wget  http://lassauge.free.fr/qemu/release/linux-0.2.img.bz2  && bzip2 -d linux-0.2.img.bz2
-sudo qemu-system-x86_64 -m 512 -smp 2 -drive file=./linux-0.2.img,format=raw,if=virtio -device virtio-net-pci,netdev=net0,mac=${BASE_MAC}fe -netdev tap,id=net0,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown
+#注意：这里不要使用linux-0.2.img这个小测试镜像，因为它里面没有virtio驱动，这里也就无法使用virtio网络了
+#      这里也不要使用cirros镜像，因为镜像里没有随机数产生装置，所以会长时间hang在＂random: crng init done＂这里（当然，它可以成功，只是时间蛮长)
+#      所以这里最好使用ubuntu镜像作为测试．通过命令行创建ubuntu镜像的方法可参见 - https://blog.csdn.net/quqi99/article/details/107123617
+# pls don’t use linux-0.2.image here because  there is no virtio driver inside it, and not use cirros as well # due to ‘random: crng init done’ (just slow but it works),  so we’d better to use ubuntu image
+qemu-system-x86_64 -m 512 -smp 2 -drive file=./<ubuntu-image>,format=raw,if=virtio -device virtio-net-pci,netdev=net0,mac=${BASE_MAC}fe -netdev tap,id=net0,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown -device virtio-rng-pci -curses
 
 注：如果是远程ssh连接的话，需通过-X参数使用X11连接,否则会报这个错：X11 connection rejected because of wrong authentication.
 1, ssh服务端在sshd_config中添加下列参数，然后重启ssh (systemctl restart ssh)
