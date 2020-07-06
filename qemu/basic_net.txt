@@ -1,0 +1,81 @@
+BASE_MAC="52:54:74:b7:10:"
+NETWORK="192.168.123."
+PHY_IF=''
+apt-get install -y qemu-kvm bridge-utils dnsmasq
+declare -i result=$(brctl show | grep demobr0 | wc -l)
+if [ $result == 0 ]; then
+   brctl addbr demobr0
+   brctl stp demobr0 off
+   ip link set demobr0 up
+   if [ -n "$PHY_IF" ]; then
+     ifconfig $PHY_IF 0.0.0.0 up
+     brctl addif demobr0 $PHY_IF
+   fi
+   sleep 1
+   ifconfig demobr0 ${NETWORK}1/24
+   echo 'create bridge demobr0 success'
+   echo 1 > /proc/sys/net/ipv4/ip_forward
+   iptables -t nat -A POSTROUTING -s ${NETWORK}0/24 -d ${NETWORK}0/24 -j ACCEPT
+   iptables -t nat -A POSTROUTING -s ${NETWORK}0/24 -j MASQUERADE
+fi
+brctl show
+
+# dnsmasq
+service dnsmasq stop
+echo "${BASE_MAC}fd,${NETWORK}249,guest" > /tmp/dhcphosts
+echo "${BASE_MAC}fe,${NETWORK}250,guest" >> /tmp/dhcphosts
+tee "/tmp/dnsmasq.conf" <<EOF
+interface=demobr0
+except-interface=lo
+bind-interfaces
+dhcp-range=${NETWORK}1,${NETWORK}250,12h
+EOF
+PID=$(ps -eo pid,cmd |grep -E '([0-9]+)\s+[^0-9]+dnsmasq' |grep demobr0 |awk '{print $1}')
+if [ -n "$PID" ]; then
+  kill -9 $PID
+fi
+dnsmasq -C /tmp/dnsmasq.conf --dhcp-hostsfile=/tmp/dhcphosts --pid-file=/tmp/demobr0-dnsmasq.pid
+
+tee "/tmp/qemu-ifup" <<EOF
+#!/bin/sh
+switch=demobr0
+if [ -n "\$1" ];then
+        sudo tunctl -u \`whoami\` -t \$1
+        sudo ip link set \$1 up 2>/dev/null
+        sleep 1
+        sudo brctl addif \$switch \$1
+        exit 0
+else
+        echo "Error: no interface specified"
+        exit 1
+fi
+EOF
+tee "/tmp/qemu-ifdown" <<EOF
+#!/bin/sh
+switch=demobr0
+if [ -n "\$1" ];then
+        sudo ip link set \$1 down
+        sudo brctl delif \$switch \$1 2>/dev/null
+        sudo tunctl -d \$1
+        exit 0
+else
+        echo "Error: no interface specified"
+        exit 1
+fi
+EOF
+chmod 777 /tmp/qemu-ifup && chmod 777 /tmp/qemu-ifdown
+apt-get install -y uml-utilities
+
+#wget http://download.cirros-cloud.net/0.5.1/cirros-0.5.1-x86_64-disk.img
+#qemu-img convert -f qcow2 -O raw cirros-0.5.1-x86_64-disk.img cirros-0.5.1-x86_64-disk.raw
+wget  http://lassauge.free.fr/qemu/release/linux-0.2.img.bz2  && bzip2 -d linux-0.2.img.bz2
+sudo qemu-system-x86_64 -m 512 -smp 2 -drive file=./linux-0.2.img,format=raw,if=virtio -device virtio-net-pci,netdev=net0,mac=${BASE_MAC}fe -netdev tap,id=net0,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown
+
+注：如果是远程ssh连接的话，需通过-X参数使用X11连接,否则会报这个错：X11 connection rejected because of wrong authentication.
+1, ssh服务端在sshd_config中添加下列参数，然后重启ssh (systemctl restart ssh)
+PermitRootLogin yes  #use this to create ~/.Xauthority when running 'ssh -X -o ForwardX11=yes ubuntu@192.168.99.190'
+X11Forwarding yes
+X11UseLocalhost no
+AddressFamily inet
+2, ssh客户端通过'ssh -X -o ForwardX11=yes ubuntu@192.168.99.190 -xxx'连接，再通过＂sudo -i＂切换到root用户
+3, 对于错误（Failed to load module "canberra-gtk-module"），　sudo apt -y install libcanberra-gtk-module libcanberra-gtk3-module
