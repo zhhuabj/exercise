@@ -60,3 +60,81 @@ netnspath=/proc/$pid/ns/net
 sudo rm -rf /var/run/netns/pause1 && sudo ln -s /proc/$pid/ns/net /var/run/netns/pause1
 sudo ip netns exec pause1 ip a
 sudo docker exec -ti pause ping 10.15.20.2
+
+
+上述是手工过程，CNI插件是kubelet以二进制的形式调用的，具体实现上主体为cmdAdd, cmdDel两大函数.
+至于其中ipam接口如何调用，则不一定按照官方的ipam plugin规范编写，甚至可将ipam相关逻辑结合到cni plugin中
+也可以独立服务，并通过API、RPC等方式调用。
+更多地关于如何写CNI插件可以参考：深入理解CNI - https://www.cnblogs.com/YaoDD/p/7419383.html
+
+package main
+
+import (
+...
+)
+
+const (
+...
+)
+
+func cmdAdd(args *skel.CmdArgs) error {
+    conf := types.NetConf{}
+    if err := json.Unmarshal(args.StdinData, &conf); err != nil {
+        log.Errorf("Error loading config from args: %v", err)
+        return errors.Wrap(err, "add cmd: error loading config from args")
+    }
+
+    versionDecoder := &cniversion.ConfigDecoder{}
+    confVersion, err := versionDecoder.Decode(args.StdinData)
+    if err != nil {
+        return err
+    }
+
+    // 在此实现：
+    // 1. 调用ipam plugin接口进行ip申请
+    // 2. 容器及宿主机各自网络栈内的操作，如创建veth，配置ip地址，配置路由等
+
+    ips := []*current.IPConfig{{Version: "4", Address: *ipnet}}
+
+    result := &current.Result{
+        IPs: ips,
+    }
+
+    return cnitypes.PrintResult(result, confVersion)
+}
+
+func cmdDel(args *skel.CmdArgs) error {
+    conf := types.NetConf{}
+    if err := json.Unmarshal(args.StdinData, &conf); err != nil {
+        log.Errorf("Error loading config from args: %v", err)
+        return errors.Wrap(err, "add cmd: error loading config from args")
+    }
+
+    versionDecoder := &cniversion.ConfigDecoder{}
+    confVersion, err := versionDecoder.Decode(args.StdinData)
+    if err != nil {
+        return err
+    }
+
+    // 在此实现：
+    // 1. 调用ipam plugin接口进行ip释放
+    // 2. 容器及宿主机各自网络栈内的操作，如删除veth，删除路由等
+
+    return nil
+}
+
+func main() {
+    log.SetLevel(log.DebugLevel)
+    ConfigLocalFilesystemLogger(logPath, 24*60*time.Hour, 24*time.Hour)
+    exitCode := 0
+
+    if e := skel.PluginMainWithError(cmdAdd, nil, cmdDel, cniversion.All, "<版本说明等信息>"); e != nil {
+        exitCode = 1
+        log.Error("Failed CNI request: ", e)
+        if err := e.Print(); err != nil {
+            log.Error("Error writing error JSON to stdout: ", err)
+        }
+    }
+
+    os.Exit(exitCode)
+}
