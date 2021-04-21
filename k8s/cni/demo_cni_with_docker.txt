@@ -1,0 +1,62 @@
+通过Docker方式演示K8S如何利用CNI来管理容器网络的过程，这里采用手工敲命令的方式(实际是由CRI在做这件事):
+kubelet 的CRI 先创建 pause 容器生成对应的 network namespace
+调用网络 driver（因为配置的是 CNI，所以会调用 CNI 相关代码）
+CNI driver 根据配置调用具体的 cni 插件
+cni 插件给 pause 容器配置正确的网络
+pod 中其他的容器都是用 pause 的网络
+
+mkdir cni & cd cni
+curl -O -L https://github.com/containernetworking/cni/releases/download/v0.4.0/cni-amd64-v0.4.0.tgz
+tar -xf cni-amd64-v0.4.0.tgz
+# ls
+bridge  cni-amd64-v0.4.0.tgz  cnitool  dhcp  flannel  host-local  ipvlan  loopback  macvlan  noop  ptp  tuning
+
+sudo ip link add br0 type bridge
+sudo ifconfig br0 up
+sudo ip netns add myns
+sudo mkdir -p /etc/cni/net.d
+cat << EOF | sudo tee /etc/cni/net.d/mybridge.conf
+{
+    "cniVersion": "0.2.0",
+    "name": "mybridge",
+    "type": "bridge",
+    "bridge": "cni_bridge0",
+    "isGateway": true,
+    "ipMasq": true,
+    "hairpinMode":true,
+    "ipam": {
+        "type": "host-local",
+        "subnet": "10.15.20.0/24",
+        "routes": [
+            { "dst": "0.0.0.0/0" },
+            { "dst": "1.1.1.1/32", "gw":"10.15.20.1"}
+        ]
+    }
+}
+EOF
+sudo CNI_COMMAND=ADD CNI_CONTAINERID=1234567890 CNI_NETNS=/var/run/netns/myns CNI_IFNAME=eth0 CNI_PATH=`pwd` ./bridge < /etc/cni/net.d/mybridge.conf
+
+$ sudo ip netns exec myns ip addr show eth0 |grep global
+    inet 10.15.20.2/24 scope global eth0
+$ sudo ip netns exec myns route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         10.15.20.1      0.0.0.0         UG    0      0        0 eth0
+1.1.1.1         10.15.20.1      255.255.255.255 UGH   0      0        0 eth0
+10.15.20.0      0.0.0.0         255.255.255.0   U     0      0        0 eth0
+
+proxychains4 sudo docker pull busybox
+sudo apt install docker.io -y
+cat << EOF | sudo tee /etc/docker/daemon.json
+{
+    "registry-mirrors":["https://bjtzu1jb.mirror.aliyuncs.com"]
+}
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+contid=$(sudo docker run -d --name pause busybox:latest /bin/sleep 10000000)
+#sudo docker run --net=container:$contid --rm busybox:latest ifconfig
+pid=$(docker inspect -f '{{ .State.Pid }}' $contid)
+netnspath=/proc/$pid/ns/net
+sudo rm -rf /var/run/netns/pause1 && sudo ln -s /proc/$pid/ns/net /var/run/netns/pause1
+sudo ip netns exec pause1 ip a
+sudo docker exec -ti pause ping 10.15.20.2
