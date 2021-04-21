@@ -1,9 +1,12 @@
-通过Docker方式演示K8S如何利用CNI来管理容器网络的过程，这里采用手工敲命令的方式(实际是由CRI在做这件事):
-kubelet 的CRI 先创建 pause 容器生成对应的 network namespace
-调用网络 driver（因为配置的是 CNI，所以会调用 CNI 相关代码）
-CNI driver 根据配置调用具体的 cni 插件
-cni 插件给 pause 容器配置正确的网络
-pod 中其他的容器都是用 pause 的网络
+我们先通过Docker方式模拟演示K8S如何利用CNI来管理容器网络的手工过程，
+这里采用手工敲命令的方式(实际是由CRI如dockershim在做这件事):
+1, kubelet 的CRI 先创建 pause 容器生成对应的 network namespace
+2, 调用网络 driver（因为配置的是 CNI，所以会调用 CNI 相关代码）
+3, CNI driver 根据配置调用具体的 cni 插件
+4, cni 插件给 pause 容器配置正确的网络
+5, pod 中其他的容器都是用 pause 的网络
+
+注意：本例中采用CNI工具包中现有的bridge来配置网络，所以它是"type": "bridge", 若是别的插件则例："type": "calico"
 
 mkdir cni & cd cni
 curl -O -L https://github.com/containernetworking/cni/releases/download/v0.4.0/cni-amd64-v0.4.0.tgz
@@ -65,7 +68,6 @@ sudo docker exec -ti pause ping 10.15.20.2
 上述是手工过程，CNI插件是kubelet以二进制的形式调用的，具体实现上主体为cmdAdd, cmdDel两大函数.
 至于其中ipam接口如何调用，则不一定按照官方的ipam plugin规范编写，甚至可将ipam相关逻辑结合到cni plugin中
 也可以独立服务，并通过API、RPC等方式调用。
-更多地关于如何写CNI插件可以参考：深入理解CNI - https://www.cnblogs.com/YaoDD/p/7419383.html
 
 package main
 
@@ -138,3 +140,6 @@ func main() {
 
     os.Exit(exitCode)
 }
+
+更多地关于如何写CNI插件可以参考：深入理解CNI - https://www.cnblogs.com/YaoDD/p/7419383.html
+及 - https://www.jianshu.com/p/88062fa25083
