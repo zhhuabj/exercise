@@ -1,0 +1,92 @@
+Exercise, TLS bootstrapping
+
+Workers must use a certificate issued by masters to communicatate with masters. To save the workload of creating certificates each time the worker is added, kubelet in worker will use a predefined certificate bootstrap-kubelet.conf to request masters to apply for cerfificate for this worker dynamically.
+kubelet has two ports, one is 10250 used to provide read/write tls private api, one is 10255 used to provide read-only non-tls private api.
+Bootstrap Token Secret (kubectl describe secrets --namespace=kube-system bootstrap-signer-token-8xsmh) will replace the previous token.csv.
+
+kube-apiserver side receives the requests for certificates from the kubelet and authenticates those requests:
+a, Recognizing CA that signs the client certificate
+   kube-apiserver --client-ca-file=/etc/kubernetes/pki/ca.crt --enable-bootstrap-token-auth=true ...
+b, Authenticating the bootstrapping kubelet to the system:bootstrappers group
+# Create Bootstrap Token
+echo "$(head -c 6 /dev/urandom | md5sum | head -c 6)"."$(head -c 16 /dev/urandom | md5sum | head -c 16)"
+vdb9xb.jiqhz35y355g1ngx
+vdb9xb.jiqhz35y355g1ngx,kubelet-bootstrap,10001,"system:bootstrappers"  #token.csv
+c, Authorize the bootstrapping kubelet to create a certificate signing request (CSR)
+kubectl describe roles.rbac.authorization.k8s.io --namespace=kube-system system:controller:bootstrap-signer
+sudo bash -c 'cat < rolebinding.yaml' <<EOF
+# enable bootstrapping nodes to create CSR
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: create-csrs-for-bootstrapping
+subjects:
+- kind: Group
+  name: system:bootstrappers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:node-bootstrapper
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kube-controller-manager side is responsible for issuing actual signed certificates:
+a, access to the “kuberetes CA key and certificate” that you created and distributed
+kube-controller-manager --cluster-signing-cert-file=/etc/kubernetes/pki/ca.crt --cluster-signing-key-file=/etc/kubernetes/pki/ca.key ...
+b, approve CSR signing automatically
+sudo bash -c 'cat < certificatesigningrequests.yaml' <<EOF
+# Approve all CSRs for the group "system:bootstrappers"
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: auto-approve-csrs-for-group
+subjects:
+- kind: Group
+  name: system:bootstrappers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+  apiGroup: rbac.authorization.k8s.io
+EOF
+sudo bash -c 'cat < renewal.yaml' <<EOF
+# Approve renewal CSRs for the group "system:nodes"
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: auto-approve-renewals-for-nodes
+subjects:
+- kind: Group
+  name: system:nodes
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kubelet side:
+kubelet --bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf ...
+# cat /etc/kubernetes/bootstrap-kubelet.conf
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: [xxx]
+    server: https://172.31.43.252:6443
+  name: kubernetes
+contexts:
+- context:
+    cluster: kubernetes
+    user: tls-bootstrap-token-user
+  name: tls-bootstrap-token-user@kubernetes
+current-context: tls-bootstrap-token-user@kubernetes
+kind: Config
+preferences: {}
+users:
+- name: tls-bootstrap-token-user
+  user:
+    token: vdb9xb.jiqhz35y355g1ngx
+
+In Summary:
+kubectl get secrets -n kube-system |grep -i bootstrap
+kubectl -n kube-system get secret bootstrap-signer-token-8xsmh -o jsonpath={.data.token}| base64 -d
