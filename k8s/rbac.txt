@@ -1,0 +1,151 @@
+Exercise, RBAC authentication
+kubectl create ns development
+kubectl create ns production
+$ kubectl config get-contexts
+CURRENT   NAME           CLUSTER        AUTHINFO   NAMESPACE
+*         juju-context   juju-cluster   admin
+
+sudo useradd -s /bin/bash DevHua
+sudo passwd DevHua
+
+# Generate a private key, then Certificate Signing Request (CSR) for DevHua
+openssl genrsa -out DevHua.key
+openssl req -new -key DevHua.key -out DevHua.csr -subj "/CN=DevHua/O=development"
+# Using the newly created request generate a self-signed certificate using the x509 protocol
+openssl x509 -req -in DevHua.csr -CA /etc/kubernetes/pki/ca.crt -CAkey /etc/kubernetes/pki/ca.key -CAcreateserial -out DevHua.crt -days 45
+
+kubectl config view
+kubectl config set-credentials --help
+kubectl config set-credentials DevHua --client-certificate=./DevHua.crt --client-key=./DevHua.key
+kubectl config set-context --help
+kubectl config set-context DevHua-context --cluster=juju-cluster --namespace=development --user=DevHua
+kubectl --context=DevHua-context get pods
+#kubectl config use-context DevHua-context
+kubectl config get-contexts
+
+# https://www.leiyawu.com/2018/06/27/Kubernetes-RBAC-Detailed/
+sudo bash -c 'cat > role-dev.yaml' <<EOF
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  namespace: development
+  name: developer
+rules:
+- apiGroups: ["", "extensions", "apps"]
+  resources: ["deployments", "replicasets", "pods"]
+  verbs: ["list", "get", "watch", "create", "update", "patch", "delete"]
+EOF
+kubectl create -f role-dev.yaml
+kubectl -n development describe roles developer
+
+sudo bash -c 'cat > rolebind.yaml' <<EOF
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: developer-role-binding
+  namespace: development
+subjects:
+  - kind: User
+    name: DevHua
+    apiGroup: ""
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: ""
+EOF
+kubectl apply -f rolebind.yaml
+kubectl -n development describe rolebinding developer-role-binding
+
+kubectl --context=DevHua-context run nginx --image=nginx
+kubectl --context=DevHua-context get pods
+kubectl --context=DevHua-context delete deploy nginx
+
+sudo bash -c 'cat > adminrolebind.yaml' <<EOF
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: developer-adminrole-binding
+  namespace: development
+subjects:
+  - kind: User
+    name: DevHua
+    apiGroup: ""
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: ""
+EOF
+kubectl apply -f adminrolebind.yaml
+kubectl --context=DevHua-context get pods
+
+kubectl apply -f role-prod.yaml
+vim role-prod.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  namespace: production #<<- This line
+  name: dev-prod #<<- and this line
+rules:
+- apiGroups: ["", "extensions", "apps"]
+  resources: ["deployments", "replicasets", "pods"]
+  verbs: ["get", "list", "watch"] #<<- and this one
+
+kubectl apply -f rolebindprod.yaml
+vim rolebindprod.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: production-role-binding
+  namespace: production
+subjects:
+- kind: User
+  name: DevDan
+  apiGroup: ""
+roleRef:
+  kind: Role
+  name: dev-prod
+  apiGroup: ""
+
+kubectl config set-context ProdHua-context --cluster=kubernetes --namespace=production --user=DevHua
+kubectl --context=ProdHua-context run nginx --image=nginx
+
+
+Exercise, RBAC authentication in Dashboard
+
+# Use default anonymous user
+# generate client-certificate-data
+grep 'client-certificate-data' /var/run/kubernetes/admin.kubeconfig | head -n 1 | awk '{print $2}' | base64 -d >> kubecfg.crt
+# generate client-key-data
+grep 'client-key-data' /var/run/kubernetes/admin.kubeconfig | head -n 1 | awk '{print $2}' | base64 -d >> kubecfg.key
+# generate p12
+openssl pkcs12 -export -clcerts -inkey kubecfg.key -in kubecfg.crt -out kubecfg.p12 -name "kubernetes-client"
+
+kubectl get secret -n kube-system | grep dashboard
+kubectl -n kube-system  get secret kubernetes-dashboard-token-kglhd -o jsonpath={.data.token}| base64 -d
+
+# Use admin user
+cat > /tmp/admin-user.yaml <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admin
+  namespace: kube-system
+EOF
+cat > /tmp/admin-user-role-binding.yaml <<EOF
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: admin
+  namespace: kube-system
+EOF
+kubectl create -f /tmp/admin-user.yaml
+kubectl create -f /tmp/admin-user-role-binding.yaml
+kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep admin | awk '{print $1}')
+
