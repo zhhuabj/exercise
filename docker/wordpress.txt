@@ -1,0 +1,12 @@
+sudo apt install docker-io -y
+cat << EOF | sudo tee /etc/docker/daemon.json                                   
+{                                                                               
+    "registry-mirrors":["https://bjtzu1jb.mirror.aliyuncs.com"]                 
+}                                                                               
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+sudo systemctl status docker
+sudo systemctl enable docker
+dig @114.114.114.114 registry-1.docker.io
+sudo docker run -e MYSQL_ROOT_PASSWORD=password -e MYSQL_DATABASE=wordpress -p 3306:3306 --name db -v "/data/database":/var/lib/mysql -d mariadb:latest
+sudo docker run -e WORDPRESS_DB_USER=root -e WORDPRESS_DB_PASSWORD=password --name wordpress --link db:mysql -p 8080:80 -v "/data/html":/var/www/html -d wordpress
