@@ -1,0 +1,114 @@
+
+echo 'step 1 - install offline docker'
+
+wget https://download.docker.com/linux/static/stable/x86_64/docker-20.10.7.tgz
+cat << EOF |tee docker.service
+[Unit]
+Description=Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network-online.target firewalld.service
+Wants=network-online.target
+[Service]
+Type=notify
+# the default is not to use systemd for cgroups because the delegate issues still
+# exists and systemd currently does not support the cgroup feature set required
+# for containers run by docker
+ExecStart=/usr/bin/dockerd
+ExecReload=/bin/kill -s HUP $MAINPID
+# Having non-zero Limit*s causes performance problems due to accounting overhead
+# in the kernel. We recommend using cgroups to do container-local accounting.
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+# Uncomment TasksMax if your systemd version supports it.
+# Only systemd 226 and above support this version.
+#TasksMax=infinity
+TimeoutStartSec=0
+# set delegate yes so that systemd does not reset the cgroups of docker containers
+Delegate=yes
+# kill only the docker process, not all processes in the cgroup
+KillMode=process
+# restart the docker process if it exits prematurely
+Restart=on-failure
+StartLimitBurst=3
+StartLimitInterval=60s
+[Install]
+WantedBy=multi-user.target
+EOF
+cat << EOF |tee install.sh
+#!/bin/sh
+tar -xvf \$1
+cp docker/* /usr/bin/
+cp docker.service /etc/systemd/system/
+chmod +x /etc/systemd/system/docker.service
+systemctl daemon-reload
+systemctl start docker
+systemctl enable docker.service
+docker -v
+sudo systemctl status docker
+EOF
+cat << EOF |tee uninstall.sh
+#!/bin/sh
+rm -f /etc/systemd/system/docker.service
+rm -rf /usr/bin/docker*
+systemctl daemon-reload
+EOF
+sudo sh ./install.sh ./docker-20.10.7.tgz
+
+echo 'step 2 - make a test image'
+
+cat << EOF | sudo tee simple-go-http-server.go
+package main
+import (
+    "io"
+    "log"
+    "net/http"
+    "os"
+    "time")
+
+type myHandler struct{}
+
+func (*myHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    io.WriteString(w, "ok")
+}
+
+func main() {
+    var port string
+    port = ":" + os.Args[1]
+    srv := &http.Server{
+        Addr:         port,
+        Handler:      &myHandler{},
+        ReadTimeout:  30 * time.Second,
+        WriteTimeout: 30 * time.Second,
+    }
+    log.Fatal(srv.ListenAndServe())
+}
+EOF
+cat << EOF |tee Dockerfile
+FROM golang:latest
+RUN mkdir /app 
+ADD simple-go-http-server.go /app/ 
+WORKDIR /app 
+CMD [ "go", "run", "/app/simple-go-http-server.go", "8080" ]
+EOF
+sudo docker build -t simple-go-http-server .
+
+
+echo 'step 3 - save image to local file'
+
+IMG_ID=$(docker image ls |awk '/simple-go-http-server/ {print $3}')
+# docker save -o images.tar postgres:9.6 mongo:3.4
+docker save $IMG_ID > myapp.tar
+
+echo ' step 4 - load image'
+
+docker load < myapp.tar
+IMG_ID2=$(docker image ls |awk '/none/ {print $3}')
+docker image tag $IMG_ID2 zhhuabj/myapp:latest
+
+echo 'step 5 - test image'
+
+sudo docker run -d --rm --name myapp zhhuabj/myapp:latest
+APP_IP=$(docker inspect myapp |grep '"IPAddress"' |head -n1 |awk -F '"' '{print $4}')
+curl ${APP_IP}:8080
+
