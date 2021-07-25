@@ -1,0 +1,336 @@
+Comes from quick-maas
+
+想在家里的一台式机node1(16G内存，4核CPU)上安装全套maas, juju, openstack.
+这种方式不是openstack安装到lxd容器里(这种方式没有maas, juju直接使用lxd cloud provider).
+这里juju使用的是maas cloud provider, 在一个lxd容器里正常安装maas,
+然后再在这个容器内创建4个kvm虚机作为POD提供maas machines, 最后juju正常连maas来创建openstack.
+
+一个最小化的openstack安装得三个节点(见：https://github.com/openstack-charmers/openstack-bundles/blob/master/stable/openstack-base/bundle.yaml）作计算节点，其他服务以lxd容器同时安装在这三个节点上，再加上一个juju controller．共需4个节点．所以：
+每个虚机给4G Mem, 20G Disk 2CPU, 所以得设置超售如：cpu_over_commit_ratio=10　memory_over_commit_ratio=1.5
+
+# physical host setting
+# setting BIOS to enable VT-x and VT-d
+sudo rmmod kvm_intel
+cat <<EOF | sudo tee /etc/modprobe.d/nested-kvm-intel.conf
+options kvm_intel nested=1
+EOF
+sudo modprobe kvm_intel
+cat /sys/module/kvm_intel/parameters/nested
+# setting up a cache on the host
+sudo apt install squid-deb-proxy -y
+# using 2Gb instead of the default 40Gb is way more reasonable on my desktop
+sudo sed -i 's/cache_dir aufs.*/cache_dir aufs \/var\/cache\/squid-deb-proxy 2000 16 256/g' /etc/squid-deb-proxy/squid-deb-proxy.conf
+sudo sed -i 's/#ppa.launchpad.net/ppa.launchpad.net/g' /etc/squid-deb-proxy/mirror-dstdomain.acl.d/10-default
+sudo sed -i 's/#private-ppa.launchpad.net/private-ppa.launchpad.net/g' /etc/squid-deb-proxy/mirror-dstdomain.acl.d/10-default
+sudo systemctl restart squid-deb-proxy
+#if nc -w 1 -z 10.0.9.1 8000; then
+#   http_proxy="http://10.0.9.1:8000/"
+#   echo "Acquire::http::Proxy \"${http_proxy}\";" > /etc/apt/apt.conf
+#fi
+#export LXD_ADDRESS=$(ifconfig lxdbr0 | grep 'inet addr:' | cut -d: -f2 | awk '{ print $1}')
+#lxc profile set <template> user.user-data
+#echo -e "#cloud-config\napt:\n proxy: http://$LXD_ADDRESS:8000" | lxc profile set $PROFILE_NAME user.user-data -
+#lxc launch ubuntu:xenial -p $PROFILE_NAME -p default
+
+# Create zfs pool with 100G
+sudo mkdir /images && sudo chown -R $USER /images/
+truncate -s 100G /images/zfsimage
+sudo /sbin/modprobe zfs
+sudo apt install zfsutils-linux -y
+#sudo zpool destroy zfspool
+sudo zpool create zfspool /images/zfsimage
+sudo zpool status
+sudo zfs list
+
+# Install and configure lxd
+sudo snap install lxd --classic
+lxc storage list |grep default  #make sure there is no default pool
+cat <<EOF | sudo lxd init --preseed
+config: {}
+networks:
+- config:
+    ipv4.address: 10.0.9.1/24
+    ipv4.nat: "true"
+    ipv4.dhcp.ranges: 10.0.9.51-10.0.9.200
+    ipv6.address: none
+  description: ""
+  managed: false
+  name: lxdbr0
+  type: ""
+storage_pools:
+- config:
+    source: zfspool
+    volatile.initial_source: zfspool
+    zfs.pool_name: zfspool
+  description: ""
+  name: default
+  driver: zfs
+profiles:
+- config: {}
+  description: ""
+  devices:
+    eth0:
+      name: eth0
+      nictype: bridged
+      parent: lxdbr0
+      type: nic
+    root:
+      path: /
+      pool: default
+      size: 90GB
+      type: disk
+  name: default
+cluster: null
+EOF
+#sudo lxc storage create zfspool zfs source=zfspool
+lxc storage list
+lxc profile create quick-maas 2>/dev/null || true
+lxc profile device add quick-maas root disk path=/ pool=default size=90GB 2>/dev/null || true
+lxc profile device add quick-maas kvm unix-char path=/dev/kvm 2>/dev/null || true
+lxc profile device add quick-maas vhost-net unix-char path=/dev/vhost-net mode=0600 2>/dev/null || true
+lxc profile set quick-maas security.nesting true
+lxc profile set quick-maas boot.autostart false
+lxc profile show quick-maas
+
+lxc remote add faster https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases/server --protocol simplestreams
+#lxc launch faster:focal maas
+#lxc init faster:focal quick-maas -p default -p quick-maas -c user.user-data="$(cat user-script.sh)"
+lxc init faster:focal quick-maas -p default -p quick-maas
+lxc network attach lxdbr0 quick-maas eth0 eth0
+lxc config device set quick-maas eth0 ipv4.address 10.0.9.10
+lxc start quick-maas
+sleep 15
+lxc file push -p --uid 1000 --gid 1000 --mode 0600 ~/.ssh/authorized_keys quick-maas/home/ubuntu/.ssh/
+sudo apt install moreutils -y
+lxc exec -t quick-maas -- tail -f -n+1 /var/log/cloud-init-output.log | ts
+
+# ssh into lxd
+lxc exec quick-maas bash
+# try not to kill some commands by session management, it seems like a race condition with MAAS jobs in root user and snapped
+# enable-linger will make the user manager for user root start at boot (and start imeediately if it's not yet started)
+loginctl enable-linger root
+export DEBIAN_FRONTEND=noninteractive
+export JUJU_DATA=~ubuntu/.local/share/juju
+MAAS_PPA='ppa:maas/2.9'
+# proxy setting
+if nc -w 1 -z 10.0.9.1 8000; then
+   http_proxy="http://10.0.9.1:8000/"
+   echo "Acquire::http::Proxy \"${http_proxy}\";" > /etc/apt/apt.conf
+fi
+# install maas and install kvm inisde it
+apt-add-repository -y "$MAAS_PPA"
+apt-get update
+eatmydata apt-get install -y libvirt-daemon-system virtinst --no-install-recommends
+cat >> /etc/libvirt/qemu.conf <<EOF
+# libvirt uses XATTRS to remember the original file owner, remember_owner=0 can disable it
+# so that a VM in an upprivileged continer can be started
+remember_owner = 0
+EOF
+systemctl restart libvirtd.service
+virsh net-destroy default
+virsh net-autostart --disable default
+virsh pool-define-as default dir --target /var/lib/libvirt/images
+virsh pool-autostart default
+virsh pool-start default
+cat <<EOF | virsh net-define /dev/stdin
+<network>
+  <name>maas</name>
+  <bridge name='maas' stp='off'/>
+  <forward mode='nat'/>
+  <ip address='192.168.151.1' netmask='255.255.255.0'/>
+</network>
+EOF
+virsh net-autostart maas
+apt install dnsmasq -y
+virsh net-start maas
+
+#configure maas
+echo maas-region-controller maas/default-maas-url string 192.168.151.1 \
+    | debconf-set-selections
+eatmydata apt-get install -y maas
+maas createadmin --username admin --password password \
+    --email admin@localhost.localdomain --ssh-import zhhuabj
+maas login admin http://localhost:5240/MAAS "$(maas apikey --username admin)"
+maas admin maas set-config name=enable_analytics value=false
+maas admin maas set-config name=maas_name value='Demo'
+maas admin maas set-config name=kernel_opts value='console=tty0 console=ttyS0,115200n8'
+maas admin maas set-config name=completed_intro value=true
+eatmydata apt-get install -y jq
+maas admin subnet update 192.168.151.0/24 \
+    gateway_ip=192.168.151.1 dns_servers=192.168.151.1
+fabric=$(maas admin subnets read | jq -r \
+    '.[] | select(.cidr=="192.168.151.0/24").vlan.fabric')
+maas admin ipranges create type=reserved \
+    start_ip=192.168.151.1 end_ip=192.168.151.100
+maas admin ipranges create type=dynamic \
+    start_ip=192.168.151.201 end_ip=192.168.151.254
+maas admin vlan update "$fabric" 0 dhcp_on=true primary_rack="$HOSTNAME"
+maas admin spaces create name=oam-space
+fabric_id=$(maas admin subnets read | jq -r '.[] | select(.cidr=="192.168.151.0/24").vlan.fabric_id')
+maas admin vlan update "$fabric_id" 0 space=oam-space
+# wait image
+time while [ "$(maas admin boot-resources is-importing)" = 'true' ]; do
+    sleep 15
+done
+sleep 120
+
+# create maas pod
+sudo -u maas ssh-keygen -f ~maas/.ssh/id_rsa -N ''
+install -m 0600 ~maas/.ssh/id_rsa.pub /root/.ssh/authorized_keys
+apt install qemu-kvm -y
+virsh domcapabilities --virttype qemu
+maas admin pods create \
+    type=virsh \
+    cpu_over_commit_ratio=10 \
+    memory_over_commit_ratio=1.5 \
+    name=localhost \
+    power_address="qemu+ssh://root@127.0.0.1/system"
+num_machines=4
+for _ in $(seq 1 "$num_machines"); do
+    maas admin pod compose 1 \
+        cores=2 \
+        memory=4096 \
+        storage='root:19,data1:1'
+done
+# wait for a while until Pod machines will be booted, can aslo visit http://10.0.9.10:5240/MAAS/r/machines
+sleep 30
+for machine in $(virsh list --all --name); do
+    virsh destroy "$machine"
+    # expose CPU model
+    virt-xml --edit --cpu mode=host-passthrough "$machine"
+    # one more NIC
+    virsh attach-interface "$machine" network maas --model virtio --config
+    virsh start "$machine"
+done
+
+# Juju
+# sometimes our connection is HAed to a blocked ip, so we just need to retry
+snap debug connectivity
+snap install --classic juju
+snap install --classic juju-wait
+snap install openstackclients
+git clone https://github.com/openstack-charmers/openstack-bundles.git
+cp -v openstack-bundles/stable/shared/openrc* ~ubuntu/
+cp -v openstack-bundles/stable/openstack-base/bundle.yaml ~ubuntu/
+cp -v openstack-bundles/stable/overlays/loadbalancer-octavia.yaml ~ubuntu/
+# strip pinned charm revisions
+sed -i.bak -e 's/\(charm: cs:.*\)-[0-9]\+/\1/' ~ubuntu/bundle.yaml
+time while true; do
+    maas_machines_statuses="$(maas admin machines read | jq -r '.[].status_name')"
+    if echo "$maas_machines_statuses" | grep -w 'Failed commissioning'; then
+        exit 1
+    fi
+    if [ "$(echo "$maas_machines_statuses" | grep -c -w 'Ready')" = "$num_machines" ]; then
+        break
+    fi
+    sleep 15
+done
+# bootstrap
+cat > clouds.yaml <<EOF
+clouds:
+  maas:
+    type: maas
+    auth-types: [oauth1]
+    endpoint: http://192.168.151.1:5240/MAAS
+EOF
+juju add-cloud --client maas -f clouds.yaml
+cat > credentials.yaml <<EOF
+credentials:
+  maas:
+    maas-credential:
+      auth-type: oauth1
+      maas-oauth: $(maas apikey --username admin)
+EOF
+juju add-credential --client maas -f credentials.yaml
+# use ubuntu user to bootstrap
+sudo -u ubuntu -H ssh-keygen -f ~ubuntu/.ssh/id_rsa -N ''
+#juju kill-controller maas-controller
+#need to visit streams.canonical.com and cloud-images.ubuntu.com here but there is no juju mirror in domestic so slow
+# sudo snap set system proxy.http="http://10.xxx.xxx.xxx:8188"  #privoxy
+# sudo snap set system proxy.https="http://10.xxx.xxx.xxx:8188"
+# wget https://streams.canonical.com/juju/tools/agent/2.9.9/juju-2.9.9-ubuntu-amd64.tgz
+#ERROR exit status 1; cmd: "snap install  --channel 4.0/stable juju-db"; output: error: unable to contact snap store
+juju bootstrap maas maas-controller --debug \
+    --config default-series=focal \
+    --config apt-mirror=http://mirrors.aliyun.com/ubuntu/ \
+    --config enable-os-refresh-update=true --config enable-os-upgrade=true \
+    --no-default-model \
+    --model-default test-mode=true \
+    --model-default logging-config='<root>=INFO;unit=DEBUG' \
+    --model-default apt-http-proxy='http://192.168.151.1:8000/'
+# can not use ssh - arp -an |grep $(sudo virsh domiflist demo |awk '/maas/ {print $5}')
+# but can use 'virsh console <id>' to monitor the output
+#qemu-img create -f qcow2 /home/ubuntu/demo.qcow2 8G
+#sudo virt-install --name=demo --ram=2048 --vcpus=1 --hvm --virt-type=kvm \
+#    --connect=qemu:///system --os-variant=ubuntu20.04 --os-type=linux --accelerate \
+#    --disk=/home/ubuntu/demo.qcow2,bus=virtio,format=qcow2,cache=none,sparse=true,size=8 \
+#    --network=bridge=maas,model=rtl8139 --nographics -v \
+#    --location 'http://mirrors.cloud.tencent.com/ubuntu/dists/focal/main/installer-amd64/' \
+#    --extra-args='console=tty0 console=ttyS0,115200n8 serial'
+# virsh console demo
+
+juju add-model o7k
+juju deploy ~ubuntu/bundle.yaml  #or using --overlay
+time juju run-action --wait glance-simplestreams-sync/leader sync-images
+# be nice to ssd
+juju model-config update-status-hook-interval=24h
+
+# setup openstack
+set +u
+# shellcheck disable=SC1091
+. ~ubuntu/openrc
+set -u
+openstack network create --external \
+    --provider-network-type flat \
+    --provider-physical-network physnet1 \
+    ext_net
+openstack subnet create \
+    --network ext_net \
+    --subnet-range 192.168.151.0/24 \
+    --gateway 192.168.151.1 \
+    --allocation-pool start=192.168.151.51,end=192.168.151.100 \
+    ext_net_subnet
+openstack network create internal
+openstack subnet create \
+    --network internal \
+    --subnet-range 10.5.5.0/24 \
+    internal_subnet
+openstack router create provider-router
+openstack router set --external-gateway ext_net provider-router
+openstack router add subnet provider-router internal_subnet
+openstack flavor create --vcpu 1 --ram 1096 --disk 8 m1.tiny
+cat ~ubuntu/.ssh/id_rsa.pub | openstack keypair create --public-key /dev/stdin mykey
+
+# build k8s over openstack
+cat <<EOF | juju add-cloud -c maas-controller --client openstack /dev/stdin
+clouds:
+  openstack:
+    type: openstack
+    auth-types: [userpass]
+    regions:
+      ${OS_REGION_NAME}:
+        endpoint: $OS_AUTH_URL
+    ca-certificates:
+    - |
+$(sed -e 's/^/      /' "$OS_CACERT")
+EOF
+cat <<EOF | juju add-credential -c maas-controller --client openstack -f /dev/stdin
+credentials:
+  openstack:
+    $OS_USERNAME:
+      auth-type: userpass
+      domain-name: ""
+      password: $OS_PASSWORD
+      project-domain-name: $OS_PROJECT_DOMAIN_NAME
+      tenant-id: ""
+      tenant-name: $OS_PROJECT_NAME
+      user-domain-name: $OS_USER_DOMAIN_NAME
+      username: $OS_USERNAME
+      version: "$OS_IDENTITY_API_VERSION"
+EOF
+juju model-defaults "openstack/${OS_REGION_NAME}" \
+    apt-http-proxy='http://192.168.151.1:8000/' \
+    network="$(openstack network show internal -f value -c id)"
+    # to exclude lb-mgmt-net which is visible from the admin tenant
+juju add-model k8s-on-openstack "openstack/${OS_REGION_NAME}"
+wget -O ~ubuntu/k8s_bundle.yaml https://api.jujucharms.com/charmstore/v5/bundle/kubernetes-core/archive/bundle.yaml
