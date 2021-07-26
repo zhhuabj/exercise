@@ -269,6 +269,53 @@ juju bootstrap maas maas-controller --debug \
 #    --extra-args='console=tty0 console=ttyS0,115200n8 serial'
 # virsh console demo
 
+
+千万注意：
+上面'juju bootstrap'命令总出错是因为防火墙的原因，它在运行"snap install  --channel 4.0/stable juju-db"命令就要访问api.snapcraft.io．
+
+ubuntu@useful-yeti:~$ snap debug connectivity
+Connectivity status:
+ * api.snapcraft.io: unreachable
+error: 1 servers unreachable
+
+$ host api.snapcraft.io
+api.snapcraft.io has address 91.189.92.40
+api.snapcraft.io has address 91.189.92.19
+api.snapcraft.io has address 91.189.92.39
+api.snapcraft.io has address 91.189.92.20
+api.snapcraft.io has address 91.189.92.41
+api.snapcraft.io has address 91.189.92.38
+
+而上面的api.snapcraft.io相关的6个IP是随机被封的(如果一段时间全封了也就无解了）．注意，因为是随机轮流被封，所以可以这样，在quick-maas上中的/var/lib/libvirt/dnsmasq/maas.conf添加一行：expand-hosts
+
+root@quick-maas:~# ps -ef |grep dnsma |grep -v grep
+libvirt+    7602       1  0 02:09 ?        00:00:00 /usr/sbin/dnsmasq --conf-file=/var/lib/libvirt/dnsmasq/maas.conf --leasefile-ro --dhcp-script=/usr/lib/libvirt/libvirt_leaseshelper
+root@quick-maas:~# cat /var/lib/libvirt/dnsmasq/maas.conf |tail -n1
+expand-hosts
+
+在/etc/hosts中添加一行：
+91.189.92.41 api.snapcraft.io　＃注意：91.189.92.41是随机被封的，也许在你添加前的那一刻它没有被封，然后接着它就被封了．正因为此，此方法也不能保证一定成功．
+
+然后kill -9 7602，然后再运行：/usr/sbin/dnsmasq --conf-file=/var/lib/libvirt/dnsmasq/maas.conf --leasefile-ro --dhcp-script=/usr/lib/libvirt/libvirt_leaseshelper
+
+几个问题：
+1, 为什么此时使用lxc controller没有问题呢？因为maas admin subnet update设置了dns_servers=192.168.151.1, 这样pod内的kvm虚机使用了dns_servers=192.168.151.１，　而若是lxd则无此问题．
+
+maas admin subnet update 192.168.151.0/24 gateway_ip=192.168.151.1 dns_servers=192.168.151.1
+
+2, juju bootstrap时可以调试吗？
+
+可以，一是通过串口连接，使用'virsh console <id>'连接机器查看日志．
+另外，可以通过ssh连接．如果设置了ssh key(sudo maas createadmin --username admin --password password --email admin@quqi.com --ssh-import lp:zhhuabj), 
+直接可以通过此key连接．若没有设置ssh key，也可以考虑~/.local/share/juju/ssh/juju_id_rsa
+ssh连接之后，监控/var/log/cloud-init-output.log即可．
+
+3, 可以maas gui控制器deploy pod中的机器，登录进去之后运行snap debug connectivity即可．
+
+
+
+
+
 juju add-model o7k
 juju deploy ~ubuntu/bundle.yaml  #or using --overlay
 time juju run-action --wait glance-simplestreams-sync/leader sync-images
