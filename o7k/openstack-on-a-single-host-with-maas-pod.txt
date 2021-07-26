@@ -312,6 +312,31 @@ ssh连接之后，监控/var/log/cloud-init-output.log即可．
 
 3, 可以maas gui控制器deploy pod中的机器，登录进去之后运行snap debug connectivity即可．
 
+4, 最后通过这种方式解决，在bootstrap的过程中出现＂Running machine configuration script＂这一步之后再ssh进机器然后运行. bootstrap完了记得取消．
+cat << EOF | sudo tee -a /etc/environment
+http_proxy=http://192.168.151.1:8118
+https_proxy=http://192.168.151.1:8118
+EOF
+sudo systemctl restart snapd
+snap debug connectivity
+sudo tail -f /var/log/cloud-init-output.log
+经测试，这种方法最初过了下载snap包的错，但接下来又出问题了，估计是Privoxy代理的原因(和acl相关？)
+2021-07-26 03:01:50 DEBUG maas controller.go:99 read version failed: &errors.unformatter{message:"", cause:gomaasapi.ServerError{error:(*errors.Err)(0xc0000b6280), StatusCode:502, Header:http.Header{"Cache-Control":[]string{"no-cache"}, "Content-Length":[]string{"7244"}, "Content-Type":[]string{"text/html"}, "Date":[]string{"Mon, 26 Jul 2021 03:01:50 GMT"}, "Expires"
+
+经测试，下面的并不work：
+sudo snap set system proxy.http="192.168.151.1:8118"  #privoxy
+sudo snap set system proxy.https="192.168.151.1:8118"
+或者采用(当然也会和上面一样的问题）：
+juju bootstrap maas maas-controller --debug \
+    --config default-series=focal \
+    --config apt-mirror=http://mirrors.aliyun.com/ubuntu/ \
+    --no-default-model \
+    --model-default test-mode=true \
+    --model-default logging-config='<root>=INFO;unit=DEBUG' \
+    --config http-proxy=http://192.168.151.1:8118 \
+    --config https-proxy=http://192.168.151.1:8118
+
+
 
 
 
