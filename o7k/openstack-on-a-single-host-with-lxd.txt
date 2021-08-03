@@ -35,8 +35,8 @@ sudo apt upgrade -y
 #https://docs.openstack.org/charm-guide/latest/openstack-on-lxd.html
 sudo snap install juju --classic
 sudo apt install -y zfsutils-linux squid-deb-proxy bridge-utils \
-    python-novaclient python-keystoneclient python-glanceclient \
-    python-neutronclient python-openstackclient curl 
+    python3-novaclient python3-keystoneclient python3-glanceclient \
+    python3-neutronclient python3-openstackclient curl 
 echo fs.inotify.max_queued_events=1048576 | sudo tee -a /etc/sysctl.conf
 echo fs.inotify.max_user_instances=1048576 | sudo tee -a /etc/sysctl.conf
 echo fs.inotify.max_user_watches=1048576 | sudo tee -a /etc/sysctl.conf
@@ -46,11 +46,40 @@ sudo sysctl -p
 
 3, Install lxd
 
+sudo snap install lxd --classic
 sudo lxd init  #all options use default values except storage backend=dir and ipv6=none
-sudo lxc profile device set default eth0 mtu 9000  #eth0 is inside container created by default (ip link set dev <nic> mtu 9000)
+sudo lxc profile edit default #first remove root disk then can run 'lxc storage delete'
+sudo lxc storage delete default
+sudo mount -o bind /images/lxd /var/snap/lxd/common/lxd/storage-pools && sudo sudo lxc storage create default
+sudo systemctl restart snap.lxd.daemon
+# add back root disk again
+cat << EOF > default.yaml
+config: {}
+description: Default LXD profile
+devices:
+  root:
+    path: /
+    pool: default
+    type: disk
+  eth0:
+    name: eth0
+    nictype: bridged
+    parent: lxdbr0
+    type: nic
+name: default
+EOF
+cat default.yaml | sudo lxc profile edit default
+sudo lxc launch faster:20.04 test1
+
+
+
+/images/lxd /var/snap/lxd/common/lxd bind defaults,bind
+
 sudo lxc remote list
 sudo lxc remote add faster https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases/server --protocol simplestreams
-sudo lxc launch faster:18.04 test1         #use tencent remote server to speed up in China
+sudo lxc launch faster:20.04 test1         #use tencent remote server to speed up in China
+#sudo lxc launch ubuntu:20.04 test1
+#lxd sql global "SELECT * FROM images;"
 #sudo unsquashfs -d testrootfs /var/lib/lxd/images/6ae1c6e92017402f1aee655fa8d785ee9d2337a3369d76115cecad5e7a303e07.rootfs
 #sudo lxc launch tencent:18.04 test1 -c security.nesting=true -v --debug
 #sudo lxc exec test1 -- sudo dhclient ens3   #run it in case there is no ipv4 ip

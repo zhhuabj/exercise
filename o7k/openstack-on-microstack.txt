@@ -1,6 +1,7 @@
 # https://opendev.org/x/microstack
+# https://ubuntu.com/openstack/install#single-node-deployment
 
-sudo snap install microstack --devmode --edge
+sudo snap install microstack --edge --devmode
 sudo -i  #fix 'sudo: microstack.init: command not found'
 export PATH=/snap/bin:$PATH
 # stuck in the error 'Waiting for 10.20.20.1:5672'
