@@ -1,0 +1,73 @@
+# set up nfs v3 server
+sudo apt update
+sudo apt-get install nfs-kernel-server qemu-kvm virtinst cloud-image-utils libvirt-bin libvirt-daemon-system libvirt-clients -y
+cat <<EOF | sudo tee /etc/exports
+/nfs *(rw,sync,no_subtree_check)
+EOF
+sudo mkdir -p /nfs && sudo chown -R {USER}: /nfs/
+sudo mkdir -p /mnt/nfs && sudo chown -R ${USER}: /mnt/nfs/
+sudo chmod 755 /nfs/images
+sudo chmod -R 777 /nfs/*
+sudo systemctl restart nfs-server
+# log out then in due to libvirt group change
+
+# set up nfs client
+showmount -e node1
+sudo mount -t nfs -o vers=3,proto=tcp,nolock node1:/nfs /mnt/nfs
+
+# prepare backing file - run on nfs client side
+sudo mkdir -p /mnt/nfs/images && cd /mnt/nfs/images
+series=xenial
+img=${series}-server-cloudimg-amd64.img
+[[ -r $img ]] || wget http://cloud-images.ubuntu.com/${series}/current/$img
+if (($?!=0)); then
+    img=${series}-server-cloudimg-amd64-disk1.img
+    wget http://cloud-images.ubuntu.com/${series}/current/$img
+fi
+
+cat << EOF > user-data
+#cloud-config
+user: ubuntu
+password: ubuntu
+hostname: __HOSTNAME__
+chpasswd: { expire: False }
+ssh_pwauth: True
+users:ubuntu
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+apt_update: True
+apt_upgrade: True
+packages:
+    - fio
+EOF
+# create two test VMs with two snapshots on the same backing file hosted in NFSv3 server
+sudo apt install cloud-image-utils -y
+snapshots=/mnt/nfs
+cd /mnt/nfs/images
+for name in dd cycler; do
+    sed -r "s/__HOSTNAME__/vm-${name}/g" user-data > user-data.vm-${name}
+    cloud-localds /mnt/nfs/seed-${name}.img user-data.vm-${name}
+    chmod 777 /mnt/nfs/seed-${name}.img 
+    sudo qemu-img create -f qcow2 -F qcow2 -o backing_file=/mnt/nfs/images/$img ${snapshots}/${series}-snap-${name}.qcow2 10G
+    sudo chmod 777 ${snapshots}/${series}-snap-${name}.qcow2
+    sudo virt-install --name=vm-${name} --ram=2048 --vcpus=1 --virt-type=kvm --hvm --cpu host --boot hd \
+             --disk=${snapshots}/${series}-snap-${name}.qcow2,cache=writethrough,bus=virtio,sparse=true \
+             --disk=/mnt/nfs/seed-${name}.img,bus=virtio,format=raw --noautoconsole \
+             --network=network=default,model=virtio
+done
+
+# # to get their IPs
+grep -i DHCPACK /var/log/syslog | tail -n 2  
+ssh ubuntu@<IP>  #password is ubuntu
+ssh-keygen -t rsa -N ""
+
+# ssh to vm-dd and do:
+while true; do dd if=/dev/zero of=outfile bs=512 count=8M; done
+#dd if=/dev/urandom of=/10GB.file bs=1k count=10240000 oflag=dsync
+
+# then for vm-cycle (192.168.122.5) do:
+scp ~/.ssh/id_rsa.pub ubuntu@192.168.122.5:.ssh/authorized_keys
+while true; do sleep 1; ssh ubuntu@192.168.122.5 -- sudo reboot; done
+#while true; do sleep 1; sudo virsh shutdown vm-cycler; sudo virsh start vm-cycler; done
+
+# and watch dmesg -wT in vm-dd for errors
