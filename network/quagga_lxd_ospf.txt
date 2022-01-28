@@ -6,6 +6,9 @@ sudo /snap/bin/lxc storage list
 $ sudo du -h /var/snap/lxd/common/lxd/storage-pools/default |tail -n1
 8.3G    /var/snap/lxd/common/lxd/storage-pools/default
 
+网络拓扑见：quagga_lxd_ospf.png
+
+#安装lxd
 sudo snap install lxd
 #all options use default values except storage backend=dir and ipv6=none
 sudo /snap/bin/lxd init
@@ -14,6 +17,7 @@ sudo /snap/bin/lxc profile show default
 sudo /snap/bin/lxc remote add faster https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases/server --protocol simplestreams
 sudo /snap/bin/lxc launch faster:20.04 R1
 
+#制作quagga镜像模板
 wget https://github.com/Quagga/quagga/releases/download/quagga-1.2.4/quagga-1.2.4.tar.gz
 wget https://c-ares.org/download/c-ares-1.18.1.tar.gz
 /snap/bin/lxc file push ./quagga-1.2.4.tar.gz R1/root/
@@ -39,12 +43,14 @@ exit
 #sudo /snap/bin/lxc image export Quagga_Template . && sudo /snap/bin/lxd import <tarbal> --alias <alias>
 sudo /snap/bin/lxc publish R1 --alias Quagga_Template --public --force
 
+#制作Client模板
 sudo /snap/bin/lxc launch Quagga_Template C1
 sudo /snap/bin/lxc exec C1 -- /bin/bash
 apt install net-tools -y
 exit
 sudo /snap/bin/lxc publish C1 --alias Client_Ubuntu2004 --public --force
 
+# 配置R1与C1节点
 sudo /snap/bin/lxc start R1
 sudo /snap/bin/lxc launch Client_Ubuntu2004 C1
 sudo /snap/bin/lxc network create C1R1 ipv6.address=none ipv4.address=192.168.10.1/24
@@ -57,6 +63,7 @@ sudo /snap/bin/lxc exec C1 -- /bin/bash
   route add default gw 192.168.10.2
   ping 192.168.10.2
 
+#配置R2与C2
 sudo /snap/bin/lxc launch Quagga_Template R2
 sudo /snap/bin/lxc launch Client_Ubuntu2004 C2
 sudo /snap/bin/lxc network create C2R2 ipv6.address=none ipv4.address=192.168.12.1/24
@@ -69,6 +76,7 @@ sudo /snap/bin/lxc exec C2 -- /bin/bash
   route add default gw 192.168.12.2
   ping 192.168.12.2
 
+#配置R3与C3
 sudo /snap/bin/lxc launch Quagga_Template R3
 sudo /snap/bin/lxc launch Client_Ubuntu2004 C3
 sudo /snap/bin/lxc network create C3R3 ipv6.address=none ipv4.address=192.168.14.1/24
@@ -200,4 +208,6 @@ Neighbor ID     Pri State           Dead Time Address         Interface         
 sudo /snap/bin/lxc exec C1 -- /bin/bash
 
 
+其他见：
+Ubuntu下使用Quagga(Zebra)搭建OSPF路由器记录
 https://blog.csdn.net/salmonwilliam/article/details/108887355
