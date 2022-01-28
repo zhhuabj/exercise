@@ -1,0 +1,203 @@
+Quagga是一个开源的基于Zebra实现了RIP, OSPF, BGP的动态路由软件。它提供的CLI命令和Cisco IOS类似 - https://blog.csdn.net/quqi99/article/details/9264373
+网络测试需要机器来运行Quagga软路由，也需要机器来运行网络测试机，用裸机太麻烦，用虚机也麻烦，容器内的网络是隔离的还是用LXD容器吧 -　https://blog.csdn.net/quqi99/article/details/52131486
+
+根目录下至少有9G的空余空间
+sudo /snap/bin/lxc storage list
+$ sudo du -h /var/snap/lxd/common/lxd/storage-pools/default |tail -n1
+8.3G    /var/snap/lxd/common/lxd/storage-pools/default
+
+sudo snap install lxd
+#all options use default values except storage backend=dir and ipv6=none
+sudo /snap/bin/lxd init
+ip addr show lxdbr0
+sudo /snap/bin/lxc profile show default
+sudo /snap/bin/lxc remote add faster https://mirrors.cloud.tencent.com/ubuntu-cloud-images/releases/server --protocol simplestreams
+sudo /snap/bin/lxc launch faster:20.04 R1
+
+wget https://github.com/Quagga/quagga/releases/download/quagga-1.2.4/quagga-1.2.4.tar.gz
+wget https://c-ares.org/download/c-ares-1.18.1.tar.gz
+/snap/bin/lxc file push ./quagga-1.2.4.tar.gz R1/root/
+/snap/bin/lxc file push ./c-ares-1.18.1.tar.gz R1/root/
+/snap/bin/lxc exec R1 -- /bin/bash
+tar -xf quagga-1.2.4.tar.gz
+tar -xf c-ares-1.18.1.tar.gz
+apt install gawk libreadline8 libreadline-dev pkg-config binutils gcc make -y
+cd /root/c-ares-1.18.1
+./configure && make && make install
+cd ../quagga-1.2.4
+./configure --enable-vtysh --enable-user=root --enable-group=root --enable-vty-group=root
+make && make install
+cat /etc/services
+cp /usr/local/etc/zebra.conf.sample /usr/local/etc/zebra.conf
+cp /usr/local/etc/vtysh.conf.sample /usr/local/etc/vtysh.conf
+cp /usr/local/etc/ospfd.conf.sample /usr/local/etc/ospfd.conf
+cp /usr/local/lib/libzebra.so.1 /lib
+cp /usr/local/lib/libospf* /lib/
+groupadd quagga && useradd quagga -g quagga
+zebra -d
+exit
+#sudo /snap/bin/lxc image export Quagga_Template . && sudo /snap/bin/lxd import <tarbal> --alias <alias>
+sudo /snap/bin/lxc publish R1 --alias Quagga_Template --public --force
+
+sudo /snap/bin/lxc launch Quagga_Template C1
+sudo /snap/bin/lxc exec C1 -- /bin/bash
+apt install net-tools -y
+exit
+sudo /snap/bin/lxc publish C1 --alias Client_Ubuntu2004 --public --force
+
+sudo /snap/bin/lxc start R1
+sudo /snap/bin/lxc launch Client_Ubuntu2004 C1
+sudo /snap/bin/lxc network create C1R1 ipv6.address=none ipv4.address=192.168.10.1/24
+sudo /snap/bin/lxc network attach C1R1 C1 eth0
+sudo /snap/bin/lxc network attach C1R1 R1 eth1
+sudo /snap/bin/lxc exec R1 -- /bin/bash
+  ip addr add 192.168.10.2/24 dev eth1 && ip link set eth1 up
+sudo /snap/bin/lxc exec C1 -- /bin/bash
+  ip addr add 192.168.10.1/24 dev eth0 && ip link set eth0 up
+  route add default gw 192.168.10.2
+  ping 192.168.10.2
+
+sudo /snap/bin/lxc launch Quagga_Template R2
+sudo /snap/bin/lxc launch Client_Ubuntu2004 C2
+sudo /snap/bin/lxc network create C2R2 ipv6.address=none ipv4.address=192.168.12.1/24
+sudo /snap/bin/lxc network attach C2R2 C2 eth0
+sudo /snap/bin/lxc network attach C2R2 R2 eth1
+sudo /snap/bin/lxc exec R2 -- /bin/bash
+  ip addr add 192.168.12.2/24 dev eth1 && ip link set eth1 up
+sudo /snap/bin/lxc exec C2 -- /bin/bash
+  ip addr add 192.168.12.1/24 dev eth0 && ip link set eth0 up
+  route add default gw 192.168.12.2
+  ping 192.168.12.2
+
+sudo /snap/bin/lxc launch Quagga_Template R3
+sudo /snap/bin/lxc launch Client_Ubuntu2004 C3
+sudo /snap/bin/lxc network create C3R3 ipv6.address=none ipv4.address=192.168.14.1/24
+sudo /snap/bin/lxc network attach C3R3 C3 eth0
+sudo /snap/bin/lxc network attach C3R3 R3 eth1
+sudo /snap/bin/lxc exec R3 -- /bin/bash
+  ip addr add 192.168.14.2/24 dev eth1 && ip link set eth1 up && exit
+sudo /snap/bin/lxc exec C3 -- /bin/bash
+  ip addr add 192.168.14.1/24 dev eth0 && ip link set eth0 up
+  route add default gw 192.168.14.2
+  ping 192.168.14.2
+
+# Connect Router and Router, R1R2
+sudo /snap/bin/lxc network create R1R2 ipv6.address=none ipv4.address=192.168.11.1/24
+sudo /snap/bin/lxc network attach R1R2 R1 eth2
+sudo /snap/bin/lxc network attach R1R2 R2 eth2
+sudo /snap/bin/lxc exec R1 -- /bin/bash
+  ip addr add 192.168.11.1/24 dev eth2 && ip link set eth2 up && exit
+sudo /snap/bin/lxc exec R2 -- /bin/bash
+  ip addr add 192.168.11.2/24 dev eth2 && ip link set eth2 up && exit
+
+# R1R3
+sudo /snap/bin/lxc network create R1R3 ipv6.address=none ipv4.address=192.168.15.1/24
+sudo /snap/bin/lxc network attach R1R3 R1 eth3
+sudo /snap/bin/lxc network attach R1R3 R3 eth2
+sudo /snap/bin/lxc exec R1 -- /bin/bash
+  ip addr add 192.168.15.1/24 dev eth3 && ip link set eth3 up && exit
+sudo /snap/bin/lxc exec R3 -- /bin/bash
+  ip addr add 192.168.15.2/24 dev eth2 && ip link set eth2 up && exit
+
+# R2R3
+sudo /snap/bin/lxc network create R2R3 ipv6.address=none ipv4.address=192.168.13.1/24
+sudo /snap/bin/lxc network attach R2R3 R2 eth3
+sudo /snap/bin/lxc network attach R2R3 R3 eth3
+sudo /snap/bin/lxc exec R2 -- /bin/bash
+  ip addr add 192.168.13.1/24 dev eth3 && ip link set eth3 up && exit
+sudo /snap/bin/lxc exec R3 -- /bin/bash
+  ip addr add 192.168.13.2/24 dev eth3 && ip link set eth3 up && exit
+
+# Configure OSPF
+sudo /snap/bin/lxc exec R1 -- /bin/bash
+cat << EOF | tee /usr/local/etc/ospfd.conf
+! -*- ospf -*-
+!
+! OSPFd sample configuration file
+!
+!
+hostname Router01
+password zebra
+!enable password please-set-at-here
+!
+router ospf
+  network 192.168.11.0/24 area 0
+  network 192.168.15.0/24 area 0
+  network 192.168.10.0/24 area 1
+!
+log stdout
+EOF
+exit
+zebra -d
+ospfd -d
+sudo /snap/bin/lxc exec R2 -- /bin/bash
+cat << EOF | tee /usr/local/etc/ospfd.conf
+! -*- ospf -*-
+!
+! OSPFd sample configuration file
+!
+!
+hostname Router02
+password zebra
+!enable password please-set-at-here
+!
+router ospf
+  network 192.168.11.0/24 area 0
+  network 192.168.13.0/24 area 0
+  network 192.168.12.0/24 area 2
+!
+debug ospf event
+log file /usr/local/etc/ospfd.log
+EOF
+exit
+zebra -d
+ospfd -d
+sudo /snap/bin/lxc exec R3 -- /bin/bash
+cat << EOF | tee /usr/local/etc/ospfd.conf
+! -*- ospf -*-
+!
+! OSPFd sample configuration file
+!
+!
+hostname Router03
+password zebra
+!enable password please-set-at-here
+!
+router ospf
+  network 192.168.13.0/24 area 0
+  network 192.168.15.0/24 area 0
+  network 192.168.14.0/24 area 3
+!
+debug ospf event
+log file /usr/local/etc/ospfd.log
+EOF
+exit
+zebra -d
+ospfd -d
+
+sudo /snap/bin/lxc exec R1 -- /bin/bash
+vtysh
+show ip ospf database
+R1# show ip ospf neighbor
+Neighbor ID     Pri State           Dead Time Address         Interface            RXmtL RqstL DBsmL
+192.168.13.1      1 Full/Backup       34.564s 192.168.11.2    eth2:192.168.11.1        0     0     0
+192.168.15.2      1 Full/Backup       35.795s 192.168.15.2    eth3:192.168.15.1        0     0     0
+
+sudo /snap/bin/lxc exec R2 -- /bin/bash
+vtysh
+R2# show ip ospf neighbor
+Neighbor ID     Pri State           Dead Time Address         Interface            RXmtL RqstL DBsmL
+192.168.15.1      1 Full/DR           34.443s 192.168.11.1    eth2:192.168.11.2        0     0     0
+192.168.15.2      1 Full/Backup       35.483s 192.168.13.2    eth3:192.168.13.1        0     0     0
+
+sudo /snap/bin/lxc exec R3 -- /bin/bash
+R3# show ip ospf neighbor
+Neighbor ID     Pri State           Dead Time Address         Interface            RXmtL RqstL DBsmL
+192.168.15.1      1 Full/DR           32.220s 192.168.15.1    eth2:192.168.15.2        0     0     0
+192.168.13.1      1 Full/DR           32.032s 192.168.13.1    eth3:192.168.13.2        0     0     0
+
+# Test - C1 -> C2
+sudo /snap/bin/lxc exec C1 -- /bin/bash
+
+
+https://blog.csdn.net/salmonwilliam/article/details/108887355
