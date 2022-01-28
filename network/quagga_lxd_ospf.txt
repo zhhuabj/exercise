@@ -6,7 +6,7 @@ sudo /snap/bin/lxc storage list
 $ sudo du -h /var/snap/lxd/common/lxd/storage-pools/default |tail -n1
 8.3G    /var/snap/lxd/common/lxd/storage-pools/default
 
-网络拓扑见：quagga_lxd_ospf.png
+网络拓扑见：https://github.com/zhhuabj/exercise/blob/master/network/quagga_lxd_ospf.png
 
 #安装lxd
 sudo snap install lxd
