@@ -1,10 +1,61 @@
-我们先通过Docker方式模拟演示K8S如何利用CNI来管理容器网络的手工过程，
-这里采用手工敲命令的方式(实际是由CRI如dockershim在做这件事):
-1, kubelet 的CRI 先创建 pause 容器生成对应的 network namespace
-2, 调用网络 driver（因为配置的是 CNI，所以会调用 CNI 相关代码）
-3, CNI driver 根据配置调用具体的 cni 插件
-4, cni 插件给 pause 容器配置正确的网络
-5, pod 中其他的容器都是用 pause 的网络
+这个实验做完之后的数据如下:
+$ sudo ip netns ls
+pause1 (id: 5)
+myns (id: 4)
+
+$ sudo ip netns exec pause1 ip addr show eth0 |grep global -B1
+    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 172.17.0.2/16 brd 172.17.255.255 scope global eth0
+
+$ sudo ip netns exec myns ip addr show eth0 |grep global -B2
+3: eth0@if45: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether 0a:58:0a:0f:14:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 10.15.20.2/24 scope global eth0
+
+$ sudo ip netns exec pause1 ping -c1 10.15.20.2
+PING 10.15.20.2 (10.15.20.2) 56(84) bytes of data.
+64 bytes from 10.15.20.2: icmp_seq=1 ttl=63 time=0.125 ms
+
+背后原理解析:
+1, kubelet调用CRI, 然后CRI(docker-shim)加载/etc/cni/net.d/mybridge.conf
+
+2, CRI将mybridge.conf json数据通过STDIN传给type=bridge插件(也可以是flannel等)
+
+3, CNI中的bridge插件再根据json数据来创建网桥(name=cni_bridge0)
+
+4, 由于isGateway=true, 所以CNI将为cni_bridge0设置IP为10.15.20.1, 及相应的NAT iptables rules
+   $ ip addr show cni_bridge0 |grep global
+      inet 10.15.20.1/24 scope global cni_bridge0
+   $ sudo iptables-save |grep 10.15
+-A POSTROUTING -s 10.15.20.0/24 -m comment --comment "name: \"mybridge\" id: \"1234567890\"" -j CNI-26633426ea992aa1f0477097
+-A CNI-26633426ea992aa1f0477097 -d 10.15.20.0/24 -m comment --comment "name: \"mybridge\" id: \"1234567890\"" -j ACCEPT
+
+5, CNI也在GW CNI netns(myns)与host之间创建了一对veth pair, 在host将的叫vethe74faefe并且它加在了cni_bridge0桥上. 这样实际上CNI netns (myns)连向了host及外网
+$ sudo ip netns exec myns ip addr show eth0 |grep global -B2
+3: eth0@if45: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether 0a:58:0a:0f:14:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 10.15.20.2/24 scope global eth0
+
+$ sudo brctl show cni_bridge0
+bridge name     bridge id               STP enabled     interfaces
+cni_bridge0             8000.0a580a0f1401       no              vethe74faefe
+
+$ ip addr show vethe74faefe
+45: vethe74faefe@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master cni_bridge0 state UP group default 
+    link/ether ba:72:12:e9:93:83 brd ff:ff:ff:ff:ff:ff link-netns myns
+
+6, 当创建容器时(这里的测试容器是pause1), CNI会调用IPAM为容器分配一个IP, 并设置默认路由. 故在容器里面会运行:
+   ip addr add 172.17.0.2/24 dev eth0
+   ip route add default via 172.17.0.1 dev eth0
+
+   在host上会在docker0上设置GW=172.17.0.1
+   $ ip addr show docker0 |grep global
+    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+   $ sudo iptables-save |grep 172.17
+     -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+
+  容器(172.17.0.2)到CNI bridge 10.15.20.2可通过ipv4 forward打通
+
 
 注意：本例中采用CNI工具包中现有的bridge来配置网络，所以它是"type": "bridge", 若是别的插件则例："type": "calico"
 
@@ -37,6 +88,7 @@ cat << EOF | sudo tee /etc/cni/net.d/mybridge.conf
     }
 }
 EOF
+# add myns to network
 sudo CNI_COMMAND=ADD CNI_CONTAINERID=1234567890 CNI_NETNS=/var/run/netns/myns CNI_IFNAME=eth0 CNI_PATH=`pwd` ./bridge < /etc/cni/net.d/mybridge.conf
 
 $ sudo ip netns exec myns ip addr show eth0 |grep global
@@ -58,7 +110,7 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart docker
 contid=$(sudo docker run -d --name pause busybox:latest /bin/sleep 10000000)
 #sudo docker run --net=container:$contid --rm busybox:latest ifconfig
-pid=$(docker inspect -f '{{ .State.Pid }}' $contid)
+pid=$(sudo docker inspect -f '{{ .State.Pid }}' $contid)
 netnspath=/proc/$pid/ns/net
 sudo rm -rf /var/run/netns/pause1 && sudo ln -s /proc/$pid/ns/net /var/run/netns/pause1
 sudo ip netns exec pause1 ip a
