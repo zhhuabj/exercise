@@ -1,0 +1,47 @@
+sudo apt install linux-headers-$(uname -r) linux-tools-$(uname -r) -y
+cat << EOF | tee hello.c
+#include <linux/module.h>    
+#include <linux/kernel.h>
+#include <linux/init.h>
+
+static int __init hello_init(void) {
+    printk(KERN_INFO "module init success\n");
+    return 0;
+}
+
+static void __exit hello_exit(void) {
+    printk(KERN_INFO "module exit success\n");
+}
+
+module_init(hello_init);
+module_exit(hello_exit);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("quqi");
+MODULE_DESCRIPTION("desc");
+EOF
+cat << EOF | tee Makefile
+obj-m:=hello.o
+PWD:= $(shell pwd)
+KERNELDIR:= /lib/modules/$(shell uname -r)/build
+EXTRA_CFLAGS= -O0
+
+all:
+	make -C $(KERNELDIR)  M=$(PWD) modules
+clean:
+	make -C $(KERNELDIR) M=$(PWD) clean
+EOF
+make
+insmod hello.ko
+
+# dmesg | grep "init success"
+[1284907.060030] module init success
+# modinfo hello.ko 
+filename:       /tmp/time/hello.ko
+license:        GPL
+author:         quqi
+description:    desc
+vermagic:       5.15.0-25-generic SMP mod_unload modversions 
+name:           hello
+retpoline:      Y
+depends:        
+srcversion:     78CB429903976BF37DC8DB7
