@@ -7,6 +7,9 @@ echo 'forward-socks5  / 192.168.99.1:7070 .' |sudo tee -a /etc/privoxy/config
 sudo systemctl restart privoxy
 echo 'HTTPS_PROXY=http://127.0.0.1:7070' |sudo tee -a /var/snap/microk8s/current/args/containerd-env
 sudo /snap/bin/microk8s.stop && sudo /snap/bin/microk8s.start
+#https://blog.csdn.net/quqi99/article/details/81032421
+sudo /snap/bin/microk8s.ctr --namespace k8s.io image ls
+sudo /snap/bin/microk8s.ctr --namespace k8s.io containers ls
 
 microk8s.kubectl config view --raw > ~/.kube/config
 microk8s.kubectl get no
