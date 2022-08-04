@@ -1,14 +1,22 @@
-#https://microk8s.io/
 sudo snap install microk8s --edge --classic
 snap list
 journalctl -u snap.microk8s.daemon-apiserver.service
+sudo usermod -a -G microk8s $USER && sudo chown -f -R $USER ~/.kube && newgrp microk8s  #avoid using ‘sudo’ for microk8s command
+#Failed to pull image "k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1" due to gfw - https://microk8s.io/docs/install-proxy 
+echo 'forward-socks5  / 192.168.99.1:7070 .' |sudo tee -a /etc/privoxy/config
+sudo systemctl restart privoxy
+echo 'HTTPS_PROXY=http://127.0.0.1:7070' |sudo tee -a /var/snap/microk8s/current/args/containerd-env
+sudo /snap/bin/microk8s.stop && sudo /snap/bin/microk8s.start
+
+microk8s.kubectl config view --raw > ~/.kube/config
 microk8s.kubectl get no
-microk8s.enable dns dashboard
 microk8s.kubectl get all --all-namespaces
 microk8s.kubectl get pods --all-namespaces
-#Failed to pull image "k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1" due to gfw
+microk8s.enable dns dashboard
 microk8s.kubectl describe pod kubernetes-dashboard-7d75c474bb-rtzm5 --namespace=kube-system
 token=$(microk8s.kubectl -n kube-system get secret | grep default-token | cut -d " " -f1)
 microk8s.kubectl -n kube-system describe secret $token
 microk8s.kubectl cluster-info
 lynx http://xxxx
+cat /var/snap/microk8s/current/args/kube*
+
