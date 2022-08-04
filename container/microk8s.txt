@@ -30,4 +30,4 @@ cat /var/snap/microk8s/current/args/kube*
 sudo /snap/bin/microk8s.ctr --namespace k8s.io image ls
 sudo /snap/bin/microk8s.ctr --namespace k8s.io containers ls
 
-
+alias kubectl='sudo /snap/bin/microk8s.kubectl'
