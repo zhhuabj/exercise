@@ -7,7 +7,7 @@ sudo usermod -a -G microk8s $USER && sudo chown -f -R $USER ~/.kube && newgrp mi
 #Failed to pull image "k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1" due to gfw - https://microk8s.io/docs/install-proxy 
 #echo 'forward-socks5  / 192.168.99.1:7070 .' |sudo tee -a /etc/privoxy/config
 #sudo systemctl restart privoxy
-#echo 'HTTPS_PROXY=http://127.0.0.1:7070' |sudo tee -a /var/snap/microk8s/current/args/containerd-env
+#echo 'HTTPS_PROXY=http://127.0.0.1:8118' |sudo tee -a /var/snap/microk8s/current/args/containerd-env
 #sudo /snap/bin/microk8s.stop && sudo /snap/bin/microk8s.start
 #or change to use
 sed -i "s#k8s.gcr.io#registry.cn-hangzhou.aliyuncs.com/google_containers#g" /var/snap/microk8s/current/args/containerd-template.toml
