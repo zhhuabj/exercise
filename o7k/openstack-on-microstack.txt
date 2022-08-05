@@ -8,7 +8,7 @@ export PATH=/snap/bin:$PATH
 # https://ask.openstack.org/en/question/125321/microstack-init-stops-at-waiting-for-rabbitmq/
 microstack.init --auto --control --debug
 exit
-#chromium-browser http://10.20.20.1  #admin/keystone
+#firefox http://10.20.20.1  #admin/keystone
 
 microstack.openstack network list
 microstack.openstack flavor list
