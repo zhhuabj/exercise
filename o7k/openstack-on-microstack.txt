@@ -6,7 +6,7 @@ sudo -i  #fix 'sudo: microstack.init: command not found'
 export PATH=/snap/bin:$PATH
 # stuck in the error 'Waiting for 10.20.20.1:5672'
 # https://ask.openstack.org/en/question/125321/microstack-init-stops-at-waiting-for-rabbitmq/
-microstack.init --auto --debug  
+microstack.init --auto --control --debug
 exit
 #chromium-browser http://10.20.20.1  #admin/keystone
 
