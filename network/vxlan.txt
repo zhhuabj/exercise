@@ -1,0 +1,52 @@
+sudo snap install lxd --classic
+sudo usermod -aG $USER lxd
+sudo chown -R $USER ~/.config/
+export EDITOR=vim
+# MUST NOT use sudo, so must cd to home dir to run it
+cd ~ && lxd init --auto
+#lxc storage create default dir && lxc storage show default
+#lxc profile device add default root disk path=/ pool=default
+lxc remote add mirror https://mirrors.tuna.tsinghua.edu.cn/lxc-images/ --protocol=simplestreams --public
+lxc image list mirror
+lxc network create lxdbr0 ipv4.address=192.168.139.1/24 ipv4.nat=true ipv6.address=none
+for i in 1 2 3; do lxc launch mirror:ubuntu/22.04 lxd$i --config security.privileged=true --config security.nesting=true; done
+for i in 1 2 3; do lxc network attach lxdbr0 lxd$i eth0; dhclient eth0; done
+for i in 1 2 3; do lxc exec lxd$i -- ip addr add 192.168.139.1$i dev eth0; done
+for i in 1 2 3; do lxc exec lxd$i -- ip link set eth0 up; done
+for i in 1 2 3; do lxc exec lxd$i -- sudo apt update && sudo apt install net-tools bridge-utils -y; done
+
+#on lxd1
+lxc exec lxd1 bash
+ip netns add vm1
+ip link add veth0 type veth peer name veth1
+brctl addbr br-int
+brctl addif br-int veth1
+ip link set veth0 netns vm1
+ip link add vxlan1 type vxlan id 1 remote 192.168.139.12 dev eth0
+brctl addif br-int vxlan1
+ip netns exec vm1 ip a add dev veth0 10.1.0.11/24
+ip link set veth1 up
+ip netns exec vm1 ip link set veth0 up
+ip netns exec vm1 ip link set lo up
+ip link set br-int up
+ip link set vxlan1 up
+
+#on lxd2
+lxc exec lxd2 bash
+ip netns add vm2
+ip link add veth0 type veth peer name veth1
+brctl addbr br-int
+brctl addif br-int veth1
+ip link set veth0 netns vm2
+ip link add vxlan1 type vxlan id 1 remote 192.168.139.11 dev eth0
+brctl addif br-int vxlan1
+ip netns exec vm2 ip a add dev veth0 10.1.0.12/24
+ip link set veth1 up
+ip netns exec vm2 ip link set veth0 up
+ip netns exec vm2 ip link set lo up
+ip link set br-int up
+ip link set vxlan1 up
+
+#verify
+root@lxd1:~# ip netns exec vm1 ping 10.1.0.12 -c1
+64 bytes from 10.1.0.12: icmp_seq=1 ttl=64 time=0.118 ms
