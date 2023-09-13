@@ -110,3 +110,133 @@ openstack project create project-net
 openstack network show project-net -f value -c id
 grep -r 'e4eafeed-aa49-404b-b071-53ce0f199887' /var/log/
 grep -r 'req-3b90ed46-2858-4360-9a34-20f8278a55fa' /var/log/ |tail -n 1 > /root/project-net.log
+
+
+
+
+##################### Run devstack on AliCloud VM (ubuntu22.04, 4 vCPU, 8G mem, 30G disk)
+
+#Create the user stack, and make sure to use this user for the test
+useradd -s /bin/bash -d /opt/stack -m stack
+chmod +x /opt/stack
+echo "stack ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/stack
+#Make sure to run this command so that cirros-cloud.net can be visited normally
+echo 'precedence ::ffff:0:0/96 100' |sudo tee -a /etc/gai.conf
+sudo -u stack -i
+
+#Use pip mirror to bypass the wall
+mkdir -p ~/.pip
+cat << EOF |tee ~/.pip/pip.conf
+[global]
+trusted-host=pypi.tuna.tsinghua.edu.cn
+index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+disable-pip-version-check = true
+timeout = 120
+EOF
+#pip3 install pbr -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+
+#Run devstack
+git clone http://git.trystack.cn/openstack/devstack.git -b stable/zed
+cd devstack
+cat << EOF |tee ./local.conf
+[[local|localrc]]
+# Network Design
+# Physical Network: HOST_IP, used for openstack itself, eg: keystone, mysql, DB etc
+# FIP Network: devstack will set its GW 192.168.101.1 in br-data, and create a SNAT rule for 192.168.101.0/24
+# VM Network: openstack will create geneve private-subnet=10.0.0.0/26, and create virtual GW 10.0.0.1/26
+TARGET_BRANCH=stable/zed
+#aliyun doens't support nested virtualization so use qemu instead
+LIBVIRT_TYPE=qemu
+#LIBVIRT_CPU_MODE=host-passthrough
+HOST_IP=$(ip route list default |grep src |awk '{print $9}')
+#If OVN_DNS_SERVERS is not set, VM will use 127.0.0.53, then systemd-resolv inside VM will fail to start, don't know yet
+OVN_DNS_SERVERS=$(resolvectl status | grep 'Current DNS Server' | awk -F':' '{print $2}' | head -n1 | sed -e 's/^[ \t]*//')
+enable_service neutron-dns
+SERVICE_HOST=\$HOST_IP
+MYSQL_HOST=\$SERVICE_HOST
+RABBIT_HOST=\$SERVICE_HOST
+GLANCE_HOSTPORT=\$SERVICE_HOST:9292
+NOVA_VNC_ENABLED=True
+NOVNCPROXY_URL=http://\$SERVICE_HOST:6080/vnc_lite.html
+VNCSERVER_LISTEN=\$HOST_IP
+VNCSERVER_PROXYCLIENT_ADDRESS=\$VNCSERVER_LISTEN
+ADMIN_PASSWORD=password
+DATABASE_PASSWORD=\$ADMIN_PASSWORD
+RABBIT_PASSWORD=\$ADMIN_PASSWORD
+SERVICE_PASSWORD=\$ADMIN_PASSWORD
+#enable ml2-dns to parse the domain of VMs
+Q_ML2_PLUGIN_EXT_DRIVERS=port_security,qos,dns
+Q_USE_SECGROUP=True
+#add the following 3 commands in /etc/rc.local as well if hoping devstack to take effect after the restart
+#ifconfig br-data 192.168.101.1/24 >/dev/null 2>&1 &
+#iptables -t nat -D POSTROUTING -s 192.168.101.0/24 ! -d 192.168.101.0/24 -j MASQUERADE >/dev/null 2>&1 &
+#iptables -t nat -A POSTROUTING -s 192.168.101.0/24 ! -d 192.168.101.0/24 -j MASQUERADE >/dev/null 2>&1 &
+#sudo systemctl enable \$(find /etc/systemd/system -name 'devstack@*.service' -print)
+FLOATING_RANGE=192.168.101.0/24
+Q_FLOATING_ALLOCATION_POOL=start=192.168.101.10,end=192.168.101.99
+PUBLIC_NETWORK_GATEWAY=192.168.101.1
+Q_USE_PROVIDERNET_FOR_PUBLIC=True
+OVS_PHYSICAL_BRIDGE=br-data
+PUBLIC_BRIDGE=\$OVS_PHYSICAL_BRIDGE
+OVS_BRIDGE_MAPPINGS=public:br-data
+IP_VERSION=4
+ENABLE_DEBUG_LOG_LEVEL=False
+SYSLOG=True
+VERBOSE=True
+LOG_COLOR=True
+LOGDAYS=3
+DOWNLOAD_DEFAULT_IMAGES=False
+#Make sure to run this command so that cirros-cloud.net can be visited normally
+#echo 'precedence ::ffff:0:0/96 100' |sudo tee -a /etc/gai.conf
+IMAGE_URLS="http://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img"
+#enable_plugin designate https://opendev.org/openstack/designate
+disable_service tempest
+disable_service dstat
+disable_service memory_tracker
+#disable etcd3 to avoid visiting github that has been blocked
+disable_service etcd3
+#ln: failed to create symbolic link '/var/run/ovn/openvswitch': File exist
+sudo rm -rf /var/run/ovn
+GIT_BASE=http://git.trystack.cn
+NOVNC_REPO=http://git.trystack.cn/kanaka/noVNC.git
+SPICE_REPO=http://git.trystack.cn/git/spice/spice-html5.git
+EOF
+#./unstack.sh && sudo systemctl restart openvswitch-switch
+./stack.sh
+
+source openrc
+#when hoping to use admin user
+#unset OS_SERVICE_TOKEN
+#export OS_USERNAME=admin
+#export OS_TENANT_NAME==admin
+source <(openstack complete)
+openstack complete |sudo tee /etc/bash_completion.d/openstack.bash_completion > /dev/null
+openstack network create bio-net
+openstack subnet create --subnet-range 10.10.122.0/24 --dhcp --dhcp --network bio-net --allocation-pool start=10.10.122.50,end=10.10.122.100 --dns-nameserver 8.8.8.8 bio-net-subnet
+openstack router create bio-rtr
+openstack router add subnet bio-rtr bio-net-subnet
+openstack router set --external-gateway public bio-rtr
+
+cat << EOF > user-data
+#cloud-config
+user: ubuntu
+password: password
+chpasswd: { expire: False }
+EOF
+# in case you don't have a key
+#ssh-keygen -q -N ""
+openstack keypair create --public-key ~/.ssh/id_rsa.pub mykey
+openstack --debug server create --image cirros-0.6.2-x86_64-disk --flavor m1.tiny --key-name mykey --nic net-id=$(openstack network list | awk '/bio-net/ {print $2}') --user-data ./user-data --config-drive true i1
+
+public_network=$(openstack network show public -f value -c id)
+fip=$(openstack floating ip create $public_network -f value -c floating_ip_address)
+fix_ip=$(openstack server list |grep 'bio-net=' |awk -F '=' '{print $2}' |awk '{print $1}')
+openstack floating ip set $fip --fixed-ip-address $fix_ip --port $(openstack port list --fixed-ip ip-address=$fix_ip -c id -f value)
+
+sg_id=$(openstack security group list --project=$(openstack server show i1 -f value -c project_id) |grep default |awk '{print $2}')
+openstack security group rule create --protocol tcp --dst-port 22 $sg_id
+openstack security group rule create --protocol icmp $sg_id
+ping $fip
+openstack console log show i1
+ssh cirros@$fip
+
