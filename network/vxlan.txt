@@ -8,12 +8,15 @@ cd ~ && lxd init --auto
 #lxc profile device add default root disk path=/ pool=default
 lxc remote add mirror https://mirrors.tuna.tsinghua.edu.cn/lxc-images/ --protocol=simplestreams --public
 lxc image list mirror
-lxc network create lxdbr0 ipv4.address=192.168.139.1/24 ipv4.nat=true ipv6.address=none
+lxc network set lxdbr0 ipv4.address=192.168.139.1/24 ipv4.nat=true ipv6.address=none
 for i in 1 2 3; do lxc launch mirror:ubuntu/22.04 lxd$i --config security.privileged=true --config security.nesting=true; done
-for i in 1 2 3; do lxc network attach lxdbr0 lxd$i eth0; dhclient eth0; done
+#for i in 1 2 3; do lxc network attach lxdbr0 lxd$i eth0; dhclient eth0; done
+#for i in 1 2 3; do lxc exec lxd$i -- ip link set eth0 up; done
 for i in 1 2 3; do lxc exec lxd$i -- ip addr add 192.168.139.1$i dev eth0; done
-for i in 1 2 3; do lxc exec lxd$i -- ip link set eth0 up; done
-for i in 1 2 3; do lxc exec lxd$i -- sudo apt update && sudo apt install net-tools bridge-utils -y; done
+for i in 1 2 3; do
+  lxc exec lxd$i -- sudo apt update
+  lxc exec lxd$i -- sudo apt install net-tools bridge-utils -y
+done
 
 #on lxd1
 lxc exec lxd1 bash
