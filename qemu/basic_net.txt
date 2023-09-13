@@ -74,3 +74,12 @@ wget http://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
 cp /opt/stack/devstack/files/cirros-0.6.2-x86_64-disk.img .
 qemu-img convert -f qcow2 -O raw cirros-0.6.2-x86_64-disk.img cirros-0.6.2-x86_64-disk.raw
 qemu-system-x86_64 -m 512 -smp 2 -drive file=./cirros-0.6.2-x86_64-disk.raw,format=raw,if=virtio -device virtio-net-pci,netdev=net0,mac=${BASE_MAC}fe -netdev tap,id=net0,script=/tmp/qemu-ifup,downscript=/tmp/qemu-ifdown -device virtio-rng-pci -curses
+
+#make ubuntu image
+sudo apt install virtinst -y
+#--hvm --virt-type=kvm --accelerate
+sudo virt-install --name=demo --ram=4094 --vcpus=2  \
+    --connect=qemu:///system --os-variant=ubuntu22.04 --os-type=linux  \
+    --disk=./demo.qcow2,bus=virtio,format=qcow2,cache=none,sparse=true,size=6 \
+    --network=bridge=virbr0,model=rtl8139 --nographics -v \
+    --location 'http://mirrors.cloud.tencent.com/ubuntu/dists/focal/main/installer-amd64/' --extra-args='console=ttyS0,115200n8 serial'
