@@ -1,61 +1,3 @@
-这个实验做完之后的数据如下:
-$ sudo ip netns ls
-pause1 (id: 5)
-myns (id: 4)
-
-$ sudo ip netns exec pause1 ip addr show eth0 |grep global -B1
-    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
-    inet 172.17.0.2/16 brd 172.17.255.255 scope global eth0
-
-$ sudo ip netns exec myns ip addr show eth0 |grep global -B2
-3: eth0@if45: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
-    link/ether 0a:58:0a:0f:14:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
-    inet 10.15.20.2/24 scope global eth0
-
-$ sudo ip netns exec pause1 ping -c1 10.15.20.2
-PING 10.15.20.2 (10.15.20.2) 56(84) bytes of data.
-64 bytes from 10.15.20.2: icmp_seq=1 ttl=63 time=0.125 ms
-
-背后原理解析:
-1, kubelet调用CRI, 然后CRI(docker-shim)加载/etc/cni/net.d/mybridge.conf
-
-2, CRI将mybridge.conf json数据通过STDIN传给type=bridge插件(也可以是flannel等)
-
-3, CNI中的bridge插件再根据json数据来创建网桥(name=cni_bridge0)
-
-4, 由于isGateway=true, 所以CNI将为cni_bridge0设置IP为10.15.20.1, 及相应的NAT iptables rules
-   $ ip addr show cni_bridge0 |grep global
-      inet 10.15.20.1/24 scope global cni_bridge0
-   $ sudo iptables-save |grep 10.15
--A POSTROUTING -s 10.15.20.0/24 -m comment --comment "name: \"mybridge\" id: \"1234567890\"" -j CNI-26633426ea992aa1f0477097
--A CNI-26633426ea992aa1f0477097 -d 10.15.20.0/24 -m comment --comment "name: \"mybridge\" id: \"1234567890\"" -j ACCEPT
-
-5, CNI也在GW CNI netns(myns)与host之间创建了一对veth pair, 在host将的叫vethe74faefe并且它加在了cni_bridge0桥上. 这样实际上CNI netns (myns)连向了host及外网
-$ sudo ip netns exec myns ip addr show eth0 |grep global -B2
-3: eth0@if45: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
-    link/ether 0a:58:0a:0f:14:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0
-    inet 10.15.20.2/24 scope global eth0
-
-$ sudo brctl show cni_bridge0
-bridge name     bridge id               STP enabled     interfaces
-cni_bridge0             8000.0a580a0f1401       no              vethe74faefe
-
-$ ip addr show vethe74faefe
-45: vethe74faefe@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master cni_bridge0 state UP group default 
-    link/ether ba:72:12:e9:93:83 brd ff:ff:ff:ff:ff:ff link-netns myns
-
-6, 当创建容器时(这里的测试容器是pause1), CNI会调用IPAM为容器分配一个IP, 并设置默认路由. 故在容器里面会运行:
-   ip addr add 172.17.0.2/24 dev eth0
-   ip route add default via 172.17.0.1 dev eth0
-
-   在host上会在docker0上设置GW=172.17.0.1
-   $ ip addr show docker0 |grep global
-    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
-   $ sudo iptables-save |grep 172.17
-     -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
-
-  容器(172.17.0.2)到CNI bridge 10.15.20.2可通过ipv4 forward打通
-
 
 注意：本例中采用CNI工具包中现有的bridge来配置网络，所以它是"type": "bridge", 若是别的插件则例："type": "calico"
 
@@ -67,7 +9,6 @@ bridge  cni-amd64-v0.4.0.tgz  cnitool  dhcp  flannel  host-local  ipvlan  loopba
 
 sudo ip link add br0 type bridge
 sudo ifconfig br0 up
-sudo ip netns add myns
 sudo mkdir -p /etc/cni/net.d
 cat << EOF | sudo tee /etc/cni/net.d/mybridge.conf
 {
@@ -89,18 +30,14 @@ cat << EOF | sudo tee /etc/cni/net.d/mybridge.conf
 }
 EOF
 # add myns to network
+sudo ip netns add myns
 sudo CNI_COMMAND=ADD CNI_CONTAINERID=1234567890 CNI_NETNS=/var/run/netns/myns CNI_IFNAME=eth0 CNI_PATH=`pwd` ./bridge < /etc/cni/net.d/mybridge.conf
 
-$ sudo ip netns exec myns ip addr show eth0 |grep global
-    inet 10.15.20.2/24 scope global eth0
-$ sudo ip netns exec myns route -n
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-0.0.0.0         10.15.20.1      0.0.0.0         UG    0      0        0 eth0
-1.1.1.1         10.15.20.1      255.255.255.255 UGH   0      0        0 eth0
-10.15.20.0      0.0.0.0         255.255.255.0   U     0      0        0 eth0
+上面CNI要做的事情就完了，创建了一个CNI GW=cni_bridge0=10.15.20.1, 并将它通过peer devices和物理网卡eth0相连。
+还打开了ipv4_forward与SNAT允许还是docker0网段的流量
 
-proxychains4 sudo docker pull busybox
+
+下面在docker0上再创建一个测试容器（叫pause1), 它就能访问CNI_GW了，进而访问外部
 sudo apt install docker.io -y
 cat << EOF | sudo tee /etc/docker/daemon.json
 {
@@ -108,6 +45,7 @@ cat << EOF | sudo tee /etc/docker/daemon.json
 }
 EOF
 sudo systemctl daemon-reload && sudo systemctl restart docker
+sudo docker pull busybox
 contid=$(sudo docker run -d --name pause busybox:latest /bin/sleep 10000000)
 #sudo docker run --net=container:$contid --rm busybox:latest ifconfig
 pid=$(sudo docker inspect -f '{{ .State.Pid }}' $contid)
@@ -115,6 +53,29 @@ netnspath=/proc/$pid/ns/net
 sudo rm -rf /var/run/netns/pause1 && sudo ln -s /proc/$pid/ns/net /var/run/netns/pause1
 sudo ip netns exec pause1 ip a
 sudo docker exec -ti pause ping 10.15.20.2
+
+
+原理如下：
+1, 当用docker创建一个名为pause1的nginx容器时, 它会使用默认网桥docker0来创建， pause1(172.17.0.2)自然能访问docker0 (172.17.0.1)
+contid=$(sudo docker run -d --name pause busybox:latest /bin/sleep 10000000)
+pid=$(sudo docker inspect -f '{{ .State.Pid }}' $contid)
+netnspath=/proc/$pid/ns/net
+sudo rm -rf /var/run/netns/pause1 && sudo ln -s /proc/$pid/ns/net /var/run/netns/pause1
+sudo ip netns exec pause1 ip a
+sudo docker exec -ti pause ping 10.15.20.2
+
+2, 由于下列三个设置，172.17.0.2能够访问CNI GW(cni_brdige0-10.15.20.1
+net.ipv4.ip_forward=1
+SNAT(-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+-A POSTROUTING -s 10.15.20.0/24 -j CNI-xx && -A CNI-xx -d 10.15.20.0/24 -j ACCEPT
+
+3, cni_bridge0与eth0通过一对peer devices连在一起，172.17.0.2自然能访问eth0
+
+4, kubelet调用CRI(docker-shim)时, CRI加载/etc/cni/net.d/mybridge.conf开始调用CNI。CNI插件是kubelet以二进制的形式调用的，实现上主要为cmdAdd, cmdDel两大函数. 所以cmdAdd需实现：
+创建CNI GW(cni_bridge0)
+创建peer devices连接cni_bridge)和eth0
+创建相应的SNAT规则有打开net.ipv4.ip_forward
+
 
 
 上述是手工过程，CNI插件是kubelet以二进制的形式调用的，具体实现上主体为cmdAdd, cmdDel两大函数.
@@ -193,5 +154,3 @@ func main() {
     os.Exit(exitCode)
 }
 
-更多地关于如何写CNI插件可以参考：深入理解CNI - https://www.cnblogs.com/YaoDD/p/7419383.html
-及 - https://www.jianshu.com/p/88062fa25083
