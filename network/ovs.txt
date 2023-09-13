@@ -1,25 +1,37 @@
+注：在 tunctl 命令中，-b 选项表示创建一个 TAP 设备（以太网桥接设备），而不是 TUN 设备（IP 隧道设备）。这意味着该选项告诉 tunctl 创建一个可以用于数据链路层（以太网帧）通信的网络设备，而不是用于网络层（IP 数据包）通信的设备。
+下面用'tunctl -b -t vnic0 -u $USER'命令生成出来的tap设备，可以直接运行‘ovs-vsctl add-port br-test vnic0’而不需要添加 '-- set Interface vnic0 type=internal', 并且在运行qemu-system-x86_64时不会报错：/dev/net/tun (vnic0): Invalid argument
+而且'ip tuntap add vnic0 mode tap'命令生成出来的tap设备，必须添加 type=internal(ovs-vsctl add-port br-test vnic0 -- set Interface vnic0 type=internal), 并且在运行qemu-system-x86_64时还会报错：/dev/net/tun (vnic0): Invalid argument
+暂不清楚为什么？之前的老版内核似乎没有这个问题。
+
+但现在第3步也ping不通了，不知道为什么?
+
 1, 创建网桥与虚拟网卡
-sudo apt install openvswitch-switch
+sudo apt install openvswitch-switch uml-utilities -y
 sudo ovs-vsctl add-br br-test
 sudo ip link set up br-test
-sudo ip tuntap add vnic0 mode tap
-sudo ip tuntap add vnic1 mode tap
-sudo ovs-vsctl add-port br-test vnic0
-sudo ovs-vsctl add-port br-test vnic1
+#Use 'tunctl -b -t vnic0 -u $USER' with '-b' instead of 'ip tuntap add vnic0 mode tap' to avoid '/dev/net/tun (vnic0): Invalid argument' when using 'qemu-system-x86_64'
+sudo tunctl -b -t vnic0 -u $USER
+sudo tunctl -b -t vnic1 -u $USER
 sudo ip link set up vnic0
 sudo ip link set up vnic1
+sudo ovs-vsctl add-port br-test vnic0
+#sometimes we should use type=internal to avoid 'could not open network device' when using 'ip tuntap add vnic0 mode tap'
+#but now we are using 'tunctl -b -t vnic0 -u $USER'
+#sudo ovs-vsctl add-port br-test vnic0 -- set Interface vnic0 type=internal
+sudo ovs-vsctl add-port br-test vnic0
+sudo ovs-vsctl add-port br-test vnic1
 
 2, 创建两个测试虚机，通过-curses参数创建，多等一会能看到登录界面
-#http_proxy=http://squid.internal:3128 wget http://download.cirros-cloud.net/0.3.4/cirros-0.3.4-x86_64-disk.img
-wget http://download.cirros-cloud.net/0.4.0/cirros-0.4.0-x86_64-disk.img
-cp cirros-0.4.0-x86_64-disk.img cirros-0.4.0-x86_64-disk2.img
-sudo qemu-system-x86_64 cirros-0.4.0-x86_64-disk.img -smp 1,cores=1 -m 512 -vnc :0 -device virtio-net-pci,netdev=net0,mac=52:4b:14:90:74:46 -netdev tap,id=net0,ifname=vnic0,script=no,downscript=no -name vm0 -curses
-sudo qemu-system-x86_64 cirros-0.4.0-x86_64-disk2.img -smp 1,cores=1 -m 512 -vnc :1 -device virtio-net-pci,netdev=net0,mac=2e:f4:42:c1:87:62 -netdev tap,id=net0,ifname=vnic1,script=no,downscript=no -name vm1 -curses
+wget http://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+cp /opt/stack/devstack/files/cirros-0.6.2-x86_64-disk.img .
+sudo qemu-system-x86_64 cirros-0.6.2-x86_64-disk.img -smp 1,cores=1 -m 512 -vnc :0 -device virtio-net-pci,netdev=net0,mac=52:4b:14:90:74:46 -netdev tap,id=net0,ifname=vnic0,script=no,downscript=no -name vm0 -curses
+cp ./cirros-0.6.2-x86_64-disk.img ./cirros-0.6.2-x86_64-disk-2.img
+sudo qemu-system-x86_64 cirros-0.6.2-x86_64-disk-2.img -smp 1,cores=1 -m 512 -vnc :1 -device virtio-net-pci,netdev=net0,mac=2e:f4:42:c1:87:62 -netdev tap,id=net0,ifname=vnic1,script=no,downscript=no -name vm1 -curses
 
 3, 登录两个虚机设置IP (VM0: 192.168.10.100，VM1: 192.168.10.101)
-$ sudo hostname vm0
-$ sudo ip addr add 192.168.10.100/24 dev eth0
-$ ping -c 1 192.168.10.101
+VM0: sudo ip addr add 192.168.10.100/24 dev eth0
+VM1: sudo ip addr add 192.168.10.101/24 dev eth0
+VM0$ ping -c 1 192.168.10.101
   PING 192.168.10.101 (192.168.10.101): 56 data bytes
   64 bytes from 192.168.10.101: seq=0 ttl=64 time=1.083 ms
 
